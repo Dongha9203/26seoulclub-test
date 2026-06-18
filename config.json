@@ -1,0 +1,59 @@
+{
+  "notion_pages": {
+    "main": "{{NOTION_MAIN_URL}}",
+    "integrated_system": "{{NOTION_INTEGRATED_SYSTEM_URL}}",
+    "faq": "{{NOTION_FAQ_URL}}"
+  },
+  "google_sheets": [],
+  "embedding_model": "voyage-4",
+  "llm_model": "claude-sonnet-4-6",
+  "similarity_threshold": 0.55,
+  "search_weights": {
+    "vector": 0.6,
+    "bm25": 0.4
+  },
+  "search_top_k": 5,
+  "repeat_threshold": 2,
+  "min_keywords_for_clarity": 1,
+  "operation_team": {
+    "name": "{{OPERATION_TEAM_NAME}}",
+    "address": "{{OPERATION_TEAM_ADDRESS}}",
+    "phone": "{{OPERATION_TEAM_PHONE}}",
+    "email_list": ["{{OPERATION_TEAM_EMAIL_1}}", "{{OPERATION_TEAM_EMAIL_2}}"],
+    "operating_hours": "{{OPERATION_TEAM_HOURS}}"
+  },
+  "categories": [
+    {
+      "name": "신청 자격 안내",
+      "keywords": ["신청 자격", "지원 자격", "참여 자격", "신청 조건", "자격 조건", "참여 가능", "신청 가능", "자격 요건"]
+    },
+    {
+      "name": "프로그램 일정 안내",
+      "keywords": ["프로그램 일정", "일정", "스케줄", "날짜", "기간", "오리엔테이션", "일정표", "운영 기간", "프로그램 기간"]
+    },
+    {
+      "name": "직무 및 기업 정보 안내",
+      "keywords": ["직무", "기업", "회사", "업무", "채용", "직무 정보", "기업 정보", "참여 기업", "직종"]
+    },
+    {
+      "name": "수당 지급 기준 안내",
+      "keywords": ["수당", "지급", "급여", "임금", "보수", "수령", "지급 기준", "활동비", "교통비"]
+    },
+    {
+      "name": "출결 및 활동기준 안내",
+      "keywords": ["출결", "출근", "결근", "활동", "출석", "지각", "조퇴", "활동 기준", "출결 기준", "무단"]
+    },
+    {
+      "name": "증빙서류 제출 안내",
+      "keywords": ["증빙", "서류", "제출", "서류 제출", "증빙서류", "첨부", "문서 제출", "제출 방법", "제출 기한"]
+    },
+    {
+      "name": "중도 포기 안내",
+      "keywords": ["포기", "중도", "탈퇴", "중단", "그만", "중도 포기", "이탈", "포기 신청", "중도 탈퇴"]
+    },
+    {
+      "name": "수료 기준 안내",
+      "keywords": ["수료", "졸업", "완료", "이수", "수료 기준", "수료 조건", "수료증", "이수 조건"]
+    }
+  ]
+}
