@@ -106,69 +106,61 @@ class TestDocument:
 
 
 # ══════════════════════════════════════════════════════════════
-# storage/sqlite_store.py
+# storage/supabase_store.py
 # ══════════════════════════════════════════════════════════════
 
-class TestSQLiteStore:
-    @pytest.fixture
-    def tmp_db(self, tmp_path):
-        db_path = tmp_path / "test.db"
-        from storage.sqlite_store import initialize_db
-        initialize_db(db_path)
-        return db_path
-
+class TestSupabaseStore:
     def _make_doc(self, source_type="docx", title="T", content="C", origin="test"):
         from models.document import Document
         return Document.new(source_type=source_type, source_origin=origin,
                             title=title, content=content)
 
-    def test_upsert_and_get(self, tmp_db):
-        from storage.sqlite_store import upsert_document, get_all
+    def test_upsert_and_get(self, pg_conn):
+        from storage.supabase_store import upsert_document, get_all
         doc = self._make_doc()
-        upsert_document(doc, tmp_db)
-        all_docs = get_all(tmp_db)
+        upsert_document(doc, pg_conn)
+        all_docs = get_all(pg_conn)
         assert len(all_docs) == 1
         assert all_docs[0].doc_id == doc.doc_id
 
-    def test_upsert_updates_existing(self, tmp_db):
-        from storage.sqlite_store import upsert_document, get_all
+    def test_upsert_updates_existing(self, pg_conn):
+        from storage.supabase_store import upsert_document, get_all
         doc = self._make_doc(title="원본")
-        upsert_document(doc, tmp_db)
+        upsert_document(doc, pg_conn)
         doc.title = "수정됨"
-        upsert_document(doc, tmp_db)
-        all_docs = get_all(tmp_db)
+        upsert_document(doc, pg_conn)
+        all_docs = get_all(pg_conn)
         assert len(all_docs) == 1
         assert all_docs[0].title == "수정됨"
 
-    def test_upsert_many(self, tmp_db):
-        from storage.sqlite_store import upsert_documents, get_total_count
+    def test_upsert_many(self, pg_conn):
+        from storage.supabase_store import upsert_documents, get_total_count
         docs = [self._make_doc(title=f"제목{i}") for i in range(5)]
-        count = upsert_documents(docs, tmp_db)
+        count = upsert_documents(docs, pg_conn)
         assert count == 5
-        assert get_total_count(tmp_db) == 5
+        assert get_total_count(pg_conn) == 5
 
-    def test_delete_by_source_origin(self, tmp_db):
-        from storage.sqlite_store import upsert_documents, delete_by_source_origin, get_all
+    def test_delete_by_source_origin(self, pg_conn):
+        from storage.supabase_store import upsert_documents, delete_by_source_origin, get_all
         docs = [self._make_doc(origin="a") for _ in range(3)]
         other = [self._make_doc(origin="b") for _ in range(2)]
-        upsert_documents(docs + other, tmp_db)
-        deleted = delete_by_source_origin("a", tmp_db)
+        upsert_documents(docs + other, pg_conn)
+        deleted = delete_by_source_origin("a", pg_conn)
         assert deleted == 3
-        remaining = get_all(tmp_db)
+        remaining = get_all(pg_conn)
         assert len(remaining) == 2
         assert all(d.source_origin == "b" for d in remaining)
 
-    def test_get_by_source_type(self, tmp_db):
-        from storage.sqlite_store import upsert_documents, get_by_source_type
+    def test_get_by_source_type(self, pg_conn):
+        from storage.supabase_store import upsert_documents, get_by_source_type
         docs = [self._make_doc(source_type="notion", origin="FAQ") for _ in range(2)]
         docs += [self._make_doc(source_type="pdf", origin="a.pdf") for _ in range(3)]
-        upsert_documents(docs, tmp_db)
-        notion_docs = get_by_source_type("notion", tmp_db)
+        upsert_documents(docs, pg_conn)
+        notion_docs = get_by_source_type("notion", pg_conn)
         assert len(notion_docs) == 2
 
-    def test_category_distribution(self, tmp_db):
-        from storage.sqlite_store import upsert_documents, get_category_distribution
-        from models.document import Document
+    def test_category_distribution(self, pg_conn):
+        from storage.supabase_store import upsert_documents, get_category_distribution
         docs = []
         for _ in range(3):
             d = self._make_doc()
@@ -178,28 +170,28 @@ class TestSQLiteStore:
             d = self._make_doc()
             d.category = "미분류"
             docs.append(d)
-        upsert_documents(docs, tmp_db)
-        dist = get_category_distribution(tmp_db)
+        upsert_documents(docs, pg_conn)
+        dist = get_category_distribution(pg_conn)
         assert dist["신청 자격 안내"] == 3
         assert dist["미분류"] == 2
 
-    def test_sync_metadata_upsert_and_get(self, tmp_db):
-        from storage.sqlite_store import upsert_sync_metadata, get_sync_metadata
-        upsert_sync_metadata("faq", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", tmp_db)
-        meta = get_sync_metadata("faq", tmp_db)
+    def test_sync_metadata_upsert_and_get(self, pg_conn):
+        from storage.supabase_store import upsert_sync_metadata, get_sync_metadata
+        upsert_sync_metadata("faq", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", pg_conn)
+        meta = get_sync_metadata("faq", pg_conn)
         assert meta["page_key"] == "faq"
         assert meta["last_notion_edited_time"] == "2026-01-01T00:00:00Z"
 
-    def test_sync_metadata_returns_none_for_unknown(self, tmp_db):
-        from storage.sqlite_store import get_sync_metadata
-        meta = get_sync_metadata("nonexistent", tmp_db)
+    def test_sync_metadata_returns_none_for_unknown(self, pg_conn):
+        from storage.supabase_store import get_sync_metadata
+        meta = get_sync_metadata("nonexistent", pg_conn)
         assert meta is None
 
-    def test_empty_upsert_many(self, tmp_db):
-        from storage.sqlite_store import upsert_documents, get_total_count
-        count = upsert_documents([], tmp_db)
+    def test_empty_upsert_many(self, pg_conn):
+        from storage.supabase_store import upsert_documents, get_total_count
+        count = upsert_documents([], pg_conn)
         assert count == 0
-        assert get_total_count(tmp_db) == 0
+        assert get_total_count(pg_conn) == 0
 
 
 # ══════════════════════════════════════════════════════════════
@@ -761,11 +753,11 @@ class TestHwpConvertedCollector:
 # ══════════════════════════════════════════════════════════════
 
 class TestEndToEnd:
-    def test_docx_to_db(self, tmp_path):
-        """docx 수집 → SQLite 저장 → 조회 흐름."""
+    def test_docx_to_db(self, tmp_path, pg_conn):
+        """docx 수집 → Supabase Postgres 저장 → 조회 흐름."""
         from docx import Document as DocxDocument
         from collectors.docx_collector import collect_docx
-        from storage.sqlite_store import initialize_db, upsert_documents, get_by_source_type
+        from storage.supabase_store import upsert_documents, get_by_source_type
 
         # 임시 docx 생성
         doc_file = tmp_path / "faq.docx"
@@ -774,21 +766,17 @@ class TestEndToEnd:
         d.add_paragraph("월 30만원을 지급합니다.")
         d.save(str(doc_file))
 
-        # 임시 DB
-        db = tmp_path / "test.db"
-        initialize_db(db)
-
         docs = collect_docx(str(doc_file))
-        upsert_documents(docs, db)
+        upsert_documents(docs, pg_conn)
 
-        stored = get_by_source_type("docx", db)
+        stored = get_by_source_type("docx", pg_conn)
         assert len(stored) == len(docs)
         assert stored[0].title == "수당 지급 기준"
 
-    def test_excel_to_db(self, tmp_path):
+    def test_excel_to_db(self, tmp_path, pg_conn):
         from openpyxl import Workbook
         from collectors.excel_collector import collect_excel
-        from storage.sqlite_store import initialize_db, upsert_documents, get_total_count
+        from storage.supabase_store import upsert_documents, get_total_count
 
         wb = Workbook()
         ws = wb.active
@@ -797,18 +785,15 @@ class TestEndToEnd:
         path = tmp_path / "data.xlsx"
         wb.save(str(path))
 
-        db = tmp_path / "test.db"
-        initialize_db(db)
-
         docs = collect_excel(str(path))
-        upsert_documents(docs, db)
+        upsert_documents(docs, pg_conn)
 
-        assert get_total_count(db) == 1
+        assert get_total_count(pg_conn) == 1
 
-    def test_category_distribution_after_import(self, tmp_path):
+    def test_category_distribution_after_import(self, tmp_path, pg_conn):
         from docx import Document as DocxDocument
         from collectors.docx_collector import collect_docx
-        from storage.sqlite_store import initialize_db, upsert_documents, get_category_distribution
+        from storage.supabase_store import upsert_documents, get_category_distribution
 
         doc_file = tmp_path / "multi.docx"
         d = DocxDocument()
@@ -818,11 +803,8 @@ class TestEndToEnd:
         d.add_paragraph("월 30만원입니다.")
         d.save(str(doc_file))
 
-        db = tmp_path / "test.db"
-        initialize_db(db)
-
         docs = collect_docx(str(doc_file))
-        upsert_documents(docs, db)
+        upsert_documents(docs, pg_conn)
 
-        dist = get_category_distribution(db)
+        dist = get_category_distribution(pg_conn)
         assert "신청 자격 안내" in dist or "미분류" in dist

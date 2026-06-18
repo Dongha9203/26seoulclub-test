@@ -1,13 +1,6 @@
 # 민감정보
 .env
 
-# 데이터베이스 (로컬 개발용)
-data/
-*.db
-
-# 2단계: Q&A 로그 (사용자 질문 원문 포함 — 커밋 금지)
-chatbot_qa_log.jsonl
-
 # Python
 __pycache__/
 *.py[cod]

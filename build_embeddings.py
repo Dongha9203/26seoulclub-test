@@ -2,7 +2,7 @@
 임베딩 백필 스크립트.
 
 initial_setup.py로 적재된 문서 중 임베딩이 없거나(또는 모델이 교체되어
-기존 임베딩이 무효화된) 문서를 Voyage AI로 임베딩하여 SQLite에 저장합니다.
+기존 임베딩이 무효화된) 문서를 Voyage AI로 임베딩하여 Supabase Postgres에 저장합니다.
 
 실행 방법:
   python build_embeddings.py
@@ -39,7 +39,7 @@ def main():
         config = json.load(f)
 
     from embedding_manager import get_embedding_provider
-    from storage.sqlite_store import get_documents_missing_embedding, update_embedding
+    from storage.supabase_store import get_documents_missing_embedding, update_embedding
 
     model = config.get("embedding_model")
     print(f"임베딩 모델: {model}")

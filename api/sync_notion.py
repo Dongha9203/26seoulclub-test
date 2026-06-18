@@ -30,7 +30,7 @@ def _perform_sync() -> dict:
     """노션 3페이지 전체 재수집 로직 (수동/cron 공통)."""
     import json as _json
     from collectors.notion_collector import sync_notion_pages
-    from storage.sqlite_store import initialize_db, delete_by_source_origin, upsert_documents
+    from storage.supabase_store import initialize_db, delete_by_source_origin, upsert_documents
     from utils.validators import validate_notion_block_ids
 
     config_path = _root / "config.json"

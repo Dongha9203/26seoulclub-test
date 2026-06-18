@@ -301,12 +301,13 @@ def sync_notion_pages(config: dict) -> Tuple[List[Document], dict]:
     }
 
     for key, url in config.get("notion_pages", {}).items():
+        page_name = page_name_map.get(key, key)
+
         if not url or "{{" in url:
             logger.warning("노션 페이지 '%s'의 URL이 설정되지 않았습니다. 건너뜁니다.", key)
-            summary[key] = {"skipped": True, "reason": "URL 미설정"}
+            summary[key] = {"page_name": page_name, "skipped": True, "reason": "URL 미설정"}
             continue
 
-        page_name = page_name_map.get(key, key)
         page_id = extract_page_id(url)
 
         try:
@@ -329,7 +330,7 @@ def sync_notion_pages(config: dict) -> Tuple[List[Document], dict]:
     return all_docs, summary
 
 
-def sync_notion_pages_incremental(config: dict, db_path=None) -> Tuple[List[Document], dict]:
+def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Document], dict]:
     """
     변경된 페이지만 재수집합니다 (cron 엔드포인트용).
     sync_metadata 테이블의 last_notion_edited_time과 비교합니다.
@@ -338,7 +339,7 @@ def sync_notion_pages_incremental(config: dict, db_path=None) -> Tuple[List[Docu
         (updated_docs, summary)
     """
     from datetime import datetime, timezone
-    from storage.sqlite_store import get_sync_metadata, upsert_sync_metadata
+    from storage.supabase_store import get_sync_metadata, upsert_sync_metadata
 
     token = os.environ.get("NOTION_API_TOKEN")
     if not token:
@@ -355,21 +356,22 @@ def sync_notion_pages_incremental(config: dict, db_path=None) -> Tuple[List[Docu
     }
 
     for key, url in config.get("notion_pages", {}).items():
+        page_name = page_name_map.get(key, key)
+
         if not url or "{{" in url:
-            summary[key] = {"skipped": True, "reason": "URL 미설정"}
+            summary[key] = {"page_name": page_name, "skipped": True, "reason": "URL 미설정"}
             continue
 
-        page_name = page_name_map.get(key, key)
         page_id = extract_page_id(url)
 
         # 마지막 수정 시각 확인
         last_edited = get_page_last_edited_time(client, page_id)
         if last_edited is None:
-            summary[key] = {"skipped": True, "reason": "페이지 조회 실패"}
+            summary[key] = {"page_name": page_name, "skipped": True, "reason": "페이지 조회 실패"}
             continue
 
         # 이전 동기화 기록과 비교
-        meta = get_sync_metadata(key, db_path)
+        meta = get_sync_metadata(key, conn)
         if meta and meta["last_notion_edited_time"] == last_edited:
             logger.info("변경 없음, 스킵: %s (last_edited=%s)", page_name, last_edited)
             summary[key] = {
@@ -384,7 +386,7 @@ def sync_notion_pages_incremental(config: dict, db_path=None) -> Tuple[List[Docu
             docs = collect_notion_page(client, page_id, page_name, url)
             all_docs.extend(docs)
             now = datetime.now(timezone.utc).isoformat()
-            upsert_sync_metadata(key, last_edited, now, db_path)
+            upsert_sync_metadata(key, last_edited, now, conn)
             summary[key] = {
                 "page_name": page_name,
                 "doc_count": len(docs),

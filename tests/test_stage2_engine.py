@@ -98,14 +98,10 @@ class TestEmbeddingManager:
 
 
 # ══════════════════════════════════════════════════════════════
-# storage/sqlite_store.py — 2단계 추가분 (임베딩 컬럼)
+# storage/supabase_store.py — 2단계 추가분 (임베딩 컬럼)
 # ══════════════════════════════════════════════════════════════
 
-class TestSqliteStoreEmbeddings:
-    @pytest.fixture
-    def db_path(self, tmp_path):
-        return tmp_path / "test_kb.db"
-
+class TestSupabaseStoreEmbeddings:
     @pytest.fixture
     def sample_doc(self):
         from models.document import Document
@@ -119,57 +115,53 @@ class TestSqliteStoreEmbeddings:
             notion_block_id="12345678-1234-1234-1234-123456789abc",
         )
 
-    def test_initialize_db_adds_embedding_columns(self, db_path):
-        from storage.sqlite_store import initialize_db, get_connection
-        initialize_db(db_path)
-        with get_connection(db_path) as conn:
-            cols = {row["name"] for row in conn.execute("PRAGMA table_info(documents)")}
+    def test_initialize_db_adds_embedding_columns(self, pg_conn):
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT column_name FROM information_schema.columns WHERE table_name = 'documents'"
+            )
+            cols = {row["column_name"] for row in cur.fetchall()}
         assert "embedding" in cols
         assert "embedding_model" in cols
 
-    def test_initialize_db_idempotent_on_existing_table(self, db_path):
-        from storage.sqlite_store import initialize_db
-        initialize_db(db_path)
-        initialize_db(db_path)  # 두 번째 호출도 에러 없이 통과해야 함
+    def test_initialize_db_idempotent_on_existing_table(self, pg_conn):
+        from storage.supabase_store import initialize_db
+        initialize_db(pg_conn)  # 두 번째 호출도 에러 없이 통과해야 함
 
-    def test_update_embedding_and_get_all_with_embeddings_roundtrip(self, db_path, sample_doc):
-        from storage.sqlite_store import initialize_db, upsert_document, update_embedding, get_all_with_embeddings
-        initialize_db(db_path)
-        upsert_document(sample_doc, db_path)
-        update_embedding(sample_doc.doc_id, [0.1, 0.2, 0.3], "voyage-4", db_path)
+    def test_update_embedding_and_get_all_with_embeddings_roundtrip(self, pg_conn, sample_doc):
+        from storage.supabase_store import upsert_document, update_embedding, get_all_with_embeddings
+        upsert_document(sample_doc, pg_conn)
+        update_embedding(sample_doc.doc_id, [0.1, 0.2, 0.3], "voyage-4", pg_conn)
 
-        results = get_all_with_embeddings("voyage-4", db_path)
+        results = get_all_with_embeddings("voyage-4", pg_conn)
         assert len(results) == 1
         doc, embedding = results[0]
         assert doc.doc_id == sample_doc.doc_id
         assert embedding == [0.1, 0.2, 0.3]
 
-    def test_get_all_with_embeddings_invalidates_on_model_change(self, db_path, sample_doc):
-        from storage.sqlite_store import initialize_db, upsert_document, update_embedding, get_all_with_embeddings
-        initialize_db(db_path)
-        upsert_document(sample_doc, db_path)
-        update_embedding(sample_doc.doc_id, [0.1, 0.2, 0.3], "voyage-3", db_path)
+    def test_get_all_with_embeddings_invalidates_on_model_change(self, pg_conn, sample_doc):
+        from storage.supabase_store import upsert_document, update_embedding, get_all_with_embeddings
+        upsert_document(sample_doc, pg_conn)
+        update_embedding(sample_doc.doc_id, [0.1, 0.2, 0.3], "voyage-3", pg_conn)
 
-        results = get_all_with_embeddings("voyage-4", db_path)  # 다른 모델로 조회
+        results = get_all_with_embeddings("voyage-4", pg_conn)  # 다른 모델로 조회
         doc, embedding = results[0]
         assert embedding is None
 
-    def test_get_documents_missing_embedding(self, db_path, sample_doc):
-        from storage.sqlite_store import initialize_db, upsert_document, update_embedding, get_documents_missing_embedding
-        initialize_db(db_path)
-        upsert_document(sample_doc, db_path)
+    def test_get_documents_missing_embedding(self, pg_conn, sample_doc):
+        from storage.supabase_store import upsert_document, update_embedding, get_documents_missing_embedding
+        upsert_document(sample_doc, pg_conn)
 
-        missing = get_documents_missing_embedding("voyage-4", db_path)
+        missing = get_documents_missing_embedding("voyage-4", pg_conn)
         assert len(missing) == 1
 
-        update_embedding(sample_doc.doc_id, [0.1, 0.2], "voyage-4", db_path)
-        missing_after = get_documents_missing_embedding("voyage-4", db_path)
+        update_embedding(sample_doc.doc_id, [0.1, 0.2], "voyage-4", pg_conn)
+        missing_after = get_documents_missing_embedding("voyage-4", pg_conn)
         assert len(missing_after) == 0
 
-    def test_get_all_with_embeddings_empty_db(self, db_path):
-        from storage.sqlite_store import initialize_db, get_all_with_embeddings
-        initialize_db(db_path)
-        assert get_all_with_embeddings("voyage-4", db_path) == []
+    def test_get_all_with_embeddings_empty_db(self, pg_conn):
+        from storage.supabase_store import get_all_with_embeddings
+        assert get_all_with_embeddings("voyage-4", pg_conn) == []
 
 
 # ══════════════════════════════════════════════════════════════
@@ -603,12 +595,12 @@ class TestChatbotEngine:
         }
 
     @pytest.fixture
-    def engine(self, config, tmp_path):
+    def engine(self, config, pg_conn):
         from chatbot_engine import ChatbotEngine
         fake_search_engine = MagicMock()
         fake_anthropic_client = MagicMock()
         return ChatbotEngine(
-            config, db_path=tmp_path / "kb.db", log_path=tmp_path / "qa_log.jsonl",
+            config, conn=pg_conn,
             search_engine=fake_search_engine, anthropic_client=fake_anthropic_client,
         )
 
@@ -683,22 +675,20 @@ class TestChatbotEngine:
         assert "02-0000-0000" in response.answer
         assert "ops@test.com" in response.answer
 
-    def test_handle_question_logs_jsonl_entry(self, engine, tmp_path):
+    def test_handle_question_logs_qa_log_entry(self, engine, pg_conn):
         engine._search_engine.search.return_value = []
         engine._search_engine.is_confident.return_value = False
 
         engine.handle_question("오늘 날씨 어때요?", "session-4")
 
-        log_path = tmp_path / "qa_log.jsonl"
-        assert log_path.exists()
-        lines = log_path.read_text(encoding="utf-8").strip().splitlines()
-        assert len(lines) == 1
-        entry = json.loads(lines[0])
-        assert entry["session_id"] == "session-4"
-        assert entry["failure_cause"] == "정책밖요청"
-        assert entry["escalated_to_operation_team"] is True
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT * FROM qa_log WHERE session_id = %s", ("session-4",))
+            rows = cur.fetchall()
+        assert len(rows) == 1
+        assert rows[0]["failure_cause"] == "정책밖요청"
+        assert rows[0]["escalated_to_operation_team"] is True
 
-    def test_handle_question_repeated_count_detected_via_log(self, engine, tmp_path):
+    def test_handle_question_repeated_count_detected_via_log(self, engine, pg_conn):
         results_low = []
         engine._search_engine.search.return_value = results_low
         engine._search_engine.is_confident.return_value = False
@@ -719,7 +709,7 @@ class TestChatbotEngine:
         with pytest.raises(ConnectionError):
             engine.handle_question("수당 지급 기준이 뭐예요?", "session-6")
 
-    def test_count_repeated_no_log_file_returns_zero(self, engine):
+    def test_count_repeated_no_log_entries_returns_zero(self, engine):
         assert engine._count_repeated("session-x", ["수당"]) == 0
 
     def test_count_repeated_empty_keywords_returns_zero(self, engine):
@@ -739,8 +729,8 @@ class TestBuildEmbeddings:
 
         fake_provider = MagicMock()
         with patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
-             patch("storage.sqlite_store.get_documents_missing_embedding", return_value=[]), \
-             patch("storage.sqlite_store.update_embedding") as fake_update:
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]), \
+             patch("storage.supabase_store.update_embedding") as fake_update:
             build_embeddings.main()
 
         fake_provider.embed_documents.assert_not_called()
@@ -760,8 +750,8 @@ class TestBuildEmbeddings:
         fake_provider.embed_documents.return_value = [[0.1, 0.2]]
 
         with patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
-             patch("storage.sqlite_store.get_documents_missing_embedding", return_value=[doc]), \
-             patch("storage.sqlite_store.update_embedding") as fake_update:
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[doc]), \
+             patch("storage.supabase_store.update_embedding") as fake_update:
             build_embeddings.main()
 
         fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4")
@@ -779,8 +769,8 @@ class TestBuildEmbeddings:
         fake_provider.embed_documents.side_effect = ConnectionError("voyage api down")
 
         with patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
-             patch("storage.sqlite_store.get_documents_missing_embedding", return_value=[doc]), \
-             patch("storage.sqlite_store.update_embedding") as fake_update:
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[doc]), \
+             patch("storage.supabase_store.update_embedding") as fake_update:
             build_embeddings.main()  # 예외를 던지지 않고 로그만 남기고 넘어가야 함
 
         fake_update.assert_not_called()

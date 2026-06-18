@@ -28,6 +28,7 @@ from hybrid_search import HybridSearchEngine
 from embedding_manager import get_embedding_provider
 from morpheme_analyzer import analyze
 from prompt_builder import build_system_prompt, call_claude, get_anthropic_client
+from storage.supabase_store import get_recent_qa_logs, insert_qa_log
 from tone_matrix import (
     SITUATION_TO_ATTITUDE,
     ResponseAttitude,
@@ -40,7 +41,6 @@ from tone_matrix import (
 logger = logging.getLogger(__name__)
 
 _FORBIDDEN_WORDS_PATH = Path(__file__).parent / "forbidden_words.json"
-_DEFAULT_LOG_PATH = Path(__file__).parent / "chatbot_qa_log.jsonl"
 
 _REPEATED_LOOKBACK = 20
 _REPEATED_OVERLAP_THRESHOLD = 0.6
@@ -64,19 +64,23 @@ class ChatbotResponse:
     keywords: List[str] = field(default_factory=list)
 
 
-def _load_forbidden_words() -> List[str]:
-    try:
-        with open(_FORBIDDEN_WORDS_PATH, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except FileNotFoundError:
-        logger.warning("forbidden_words.json을 찾을 수 없습니다: %s", _FORBIDDEN_WORDS_PATH)
-        return []
-    except json.JSONDecodeError as e:
-        logger.error("forbidden_words.json 파싱 오류: %s", e)
-        return []
+def _load_forbidden_words(categories: Optional[Dict[str, List[str]]] = None) -> List[str]:
+    """categories를 넘기면 forbidden_words.json 파일 대신 이 값을 사용합니다
+    (4단계 대시보드에서 운영자가 수정한 app_settings 값을 즉시 반영하기 위함)."""
+    if categories is None:
+        try:
+            with open(_FORBIDDEN_WORDS_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            logger.warning("forbidden_words.json을 찾을 수 없습니다: %s", _FORBIDDEN_WORDS_PATH)
+            return []
+        except json.JSONDecodeError as e:
+            logger.error("forbidden_words.json 파싱 오류: %s", e)
+            return []
+        categories = data.get("categories", {})
 
     flat: List[str] = []
-    for words in data.get("categories", {}).values():
+    for words in categories.values():
         flat.extend(words)
     return flat
 
@@ -101,18 +105,20 @@ def _elapsed_ms(start: float) -> int:
 
 
 class ChatbotEngine:
-    def __init__(self, config: dict, db_path=None, log_path: Optional[Path] = None,
+    def __init__(self, config: dict, conn=None,
                  search_engine: Optional[HybridSearchEngine] = None,
                  anthropic_client=None):
         self._config = config
-        self._db_path = db_path
-        self._log_path = log_path or _DEFAULT_LOG_PATH
-        self._forbidden_words = _load_forbidden_words()
+        self._conn = conn
+        self._forbidden_words = _load_forbidden_words(config.get("forbidden_words"))
         self._search_engine = search_engine or HybridSearchEngine(
             get_embedding_provider(config), config
         )
-        self._classifier = SituationClassifier(repeat_threshold=config.get("repeat_threshold", 2))
-        self._tone_builder = ToneMatrixBuilder()
+        self._classifier = SituationClassifier(
+            repeat_threshold=config.get("repeat_threshold", 2),
+            keywords=config.get("situation_keywords"),
+        )
+        self._tone_builder = ToneMatrixBuilder(tone_elements=config.get("tone_elements"))
         self._anthropic_client = anthropic_client or get_anthropic_client()
         self._llm_model = config["llm_model"]
         self._min_keywords = config.get("min_keywords_for_clarity", 1)
@@ -121,23 +127,15 @@ class ChatbotEngine:
     # 반복 질문 판단
     # ------------------------------------------------------------------
     def _count_repeated(self, session_id: str, keywords: List[str]) -> int:
-        if not keywords or not self._log_path.exists():
+        if not keywords:
             return 0
 
         kw_set = set(keywords)
-        recent_lines: List[str] = []
-        with open(self._log_path, "r", encoding="utf-8") as f:
-            for line in f:
-                recent_lines.append(line)
-        recent_lines = recent_lines[-_REPEATED_LOOKBACK:]
+        recent_entries = get_recent_qa_logs(_REPEATED_LOOKBACK, self._conn)
 
         count = 0
-        for line in recent_lines:
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if entry.get("session_id") != session_id:
+        for entry in recent_entries:
+            if entry["session_id"] != session_id:
                 continue
             entry_kw = set(entry.get("keywords") or [])
             if not entry_kw:
@@ -154,8 +152,7 @@ class ChatbotEngine:
     # 로깅
     # ------------------------------------------------------------------
     def _write_log(self, entry: Dict) -> None:
-        with open(self._log_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        insert_qa_log(entry, self._conn)
 
     # ------------------------------------------------------------------
     # 메인 엔트리포인트
@@ -204,7 +201,7 @@ class ChatbotEngine:
         repeated_count = self._count_repeated(session_id, keywords)
 
         # ── step: 하이브리드 검색 ─────────────────────────────────────────
-        results = self._search_engine.search(question, self._db_path)
+        results = self._search_engine.search(question, self._conn)
         confident = self._search_engine.is_confident(results)
 
         if not confident:

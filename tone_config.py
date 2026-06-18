@@ -17,7 +17,13 @@ BRAND_TONE_ELEMENTS = {
 }
 
 
-def build_brand_tone_guideline() -> str:
-    """8요소를 합쳐 시스템 프롬프트에 삽입할 베이스 톤 지침 문자열을 생성합니다."""
-    lines = [f"- {v}" for v in BRAND_TONE_ELEMENTS.values()]
+def build_brand_tone_guideline(elements: dict = None) -> str:
+    """8요소를 합쳐 시스템 프롬프트에 삽입할 베이스 톤 지침 문자열을 생성합니다.
+
+    elements를 넘기지 않으면 모듈 기본값(BRAND_TONE_ELEMENTS)을 사용합니다.
+    4단계 대시보드에서 운영자가 수정한 값(app_settings)을 즉시 반영하려면
+    매 요청마다 최신 값을 조회해 이 인자로 넘겨주면 됩니다.
+    """
+    elements = elements or BRAND_TONE_ELEMENTS
+    lines = [f"- {v}" for v in elements.values()]
     return "[브랜드 톤 기본 지침]\n" + "\n".join(lines)

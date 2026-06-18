@@ -33,6 +33,7 @@ ANSWER_TOOL = {
             },
         },
         "required": ["answer", "sentiment_score"],
+        "additionalProperties": False,
     },
     "strict": True,
 }

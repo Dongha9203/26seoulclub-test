@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>동아리ON 챗봇</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo",
+                 "Malgun Gothic", sans-serif;
+    background: #ffffff;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  #header {
+    padding: 14px 16px; border-bottom: 1px solid #eee;
+    font-weight: 600; font-size: 15px; color: #222;
+  }
+  #messages {
+    flex: 1; overflow-y: auto; padding: 16px; display: flex;
+    flex-direction: column; gap: 10px;
+  }
+  .bubble {
+    max-width: 80%; padding: 10px 14px; border-radius: 14px;
+    font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word;
+  }
+  .bubble.user {
+    align-self: flex-end; background: #2563eb; color: #fff;
+    border-bottom-right-radius: 4px;
+  }
+  .bubble.bot {
+    align-self: flex-start; background: #f1f3f5; color: #222;
+    border-bottom-left-radius: 4px;
+  }
+  .bubble.error { background: #fff1f0; color: #c0392b; }
+  .bubble a { color: inherit; text-decoration: underline; }
+  .bubble.bot a { color: #2563eb; }
+  #input-row {
+    display: flex; gap: 8px; padding: 12px; border-top: 1px solid #eee;
+  }
+  #question-input {
+    flex: 1; padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px;
+    font-size: 14px; resize: none; font-family: inherit;
+  }
+  #send-button {
+    padding: 0 18px; border: none; border-radius: 10px; background: #2563eb;
+    color: #fff; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  #send-button:disabled { background: #aac4f4; cursor: default; }
+  .typing { color: #888; font-style: italic; }
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="header">동아리ON 챗봇</div>
+  <div id="messages"></div>
+  <div id="input-row">
+    <textarea id="question-input" rows="1" placeholder="궁금한 점을 입력해주세요"></textarea>
+    <button id="send-button">전송</button>
+  </div>
+</div>
+
+<script>
+const API_URL = "/api/chat";
+const SESSION_KEY = "donghoiOnSessionId";
+
+function getSessionId() {
+  let id = localStorage.getItem(SESSION_KEY);
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : String(Date.now()) + Math.random());
+    localStorage.setItem(SESSION_KEY, id);
+  }
+  return id;
+}
+
+const messagesEl = document.getElementById("messages");
+const inputEl = document.getElementById("question-input");
+const sendButton = document.getElementById("send-button");
+
+function appendBubble(text, kind) {
+  const el = document.createElement("div");
+  el.className = "bubble " + kind;
+  el.textContent = text;
+  messagesEl.appendChild(el);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return el;
+}
+
+function appendBotAnswer(answer, deepLink) {
+  const el = document.createElement("div");
+  el.className = "bubble bot";
+  el.textContent = answer;
+  if (deepLink) {
+    el.appendChild(document.createElement("br"));
+    const a = document.createElement("a");
+    a.href = deepLink;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    a.textContent = "자세히 보기 →";
+    el.appendChild(a);
+  }
+  messagesEl.appendChild(el);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+async function sendQuestion() {
+  const question = inputEl.value.trim();
+  if (!question) return;
+
+  appendBubble(question, "user");
+  inputEl.value = "";
+  sendButton.disabled = true;
+  const typingEl = appendBubble("답변 작성 중...", "bot");
+  typingEl.classList.add("typing");
+
+  try {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ question: question, session_id: getSessionId() }),
+    });
+    const data = await res.json().catch(() => ({}));
+    typingEl.remove();
+
+    if (res.ok) {
+      appendBotAnswer(data.answer, data.deep_link);
+    } else if (res.status === 429) {
+      appendBubble(data.error || "잠시 후 다시 시도해주세요.", "error");
+    } else {
+      appendBubble(data.error || "오류가 발생했습니다. 다시 시도해주세요.", "error");
+    }
+  } catch (e) {
+    typingEl.remove();
+    appendBubble("네트워크 오류가 발생했습니다. 다시 시도해주세요.", "error");
+  } finally {
+    sendButton.disabled = false;
+    inputEl.focus();
+  }
+}
+
+sendButton.addEventListener("click", sendQuestion);
+inputEl.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    sendQuestion();
+  }
+});
+</script>
+</body>
+</html>

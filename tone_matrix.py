@@ -90,8 +90,10 @@ def _matches_any(text: str, keywords: List[str]) -> bool:
 
 
 class SituationClassifier:
-    def __init__(self, repeat_threshold: int = 2):
-        self._keywords = _load_keywords()
+    def __init__(self, repeat_threshold: int = 2, keywords: Dict[str, List[str]] = None):
+        """keywords를 넘기면 situation_keywords.json 파일 대신 이 값을 사용합니다
+        (4단계 대시보드에서 운영자가 수정한 app_settings 값을 즉시 반영하기 위함)."""
+        self._keywords = keywords if keywords is not None else _load_keywords()
         self._repeat_threshold = repeat_threshold
 
     def classify(self, inp: SituationClassificationInput) -> Situation:
@@ -119,11 +121,16 @@ class SituationClassifier:
 
 
 class ToneMatrixBuilder:
+    def __init__(self, tone_elements: dict = None):
+        """tone_elements를 넘기면 tone_config.py의 모듈 기본값 대신 이 값을 사용합니다
+        (4단계 대시보드에서 운영자가 수정한 app_settings 값을 즉시 반영하기 위함)."""
+        self._tone_elements = tone_elements
+
     def build_instruction(self, situation: Situation) -> str:
         """상황에 맞는 톤 지침(브랜드 톤 + 응답태도 + 상황별 추가지침)을 합쳐 반환합니다."""
         attitude = SITUATION_TO_ATTITUDE[situation]
         parts = [
-            build_brand_tone_guideline(),
+            build_brand_tone_guideline(self._tone_elements),
             f"\n[현재 상황: {situation.value} / 응답 태도: {attitude.value}]",
             _ATTITUDE_INSTRUCTION[attitude],
         ]

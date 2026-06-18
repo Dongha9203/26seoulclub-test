@@ -2,7 +2,7 @@
 초기 데이터 구축 스크립트.
 
 개발자가 1회 실행하는 스크립트입니다.
-노션 3페이지 + config.json에 등록된 구글 스프레드시트를 한 번에 수집해 SQLite에 적재합니다.
+노션 3페이지 + config.json에 등록된 구글 스프레드시트를 한 번에 수집해 Supabase Postgres에 적재합니다.
 
 실행 방법:
   python initial_setup.py
@@ -51,8 +51,8 @@ def main():
         config = json.load(f)
 
     # DB 초기화
-    from storage.sqlite_store import initialize_db, delete_by_source_origin, upsert_documents
-    print("\n[1/4] SQLite 데이터베이스 초기화...")
+    from storage.supabase_store import initialize_db, delete_by_source_origin, upsert_documents
+    print("\n[1/4] Supabase Postgres 데이터베이스 초기화...")
     initialize_db()
     print("  ✓ 테이블 생성 완료")
 
@@ -112,8 +112,8 @@ def main():
             except ValueError as e:
                 print(f"  ✗ 구글시트 수집 실패: {e}")
 
-    # ── SQLite 저장 ────────────────────────────────────────────────────────
-    print("\n[4/4] SQLite에 저장...")
+    # ── Supabase Postgres 저장 ────────────────────────────────────────────
+    print("\n[4/4] Supabase Postgres에 저장...")
     if all_docs:
         inserted = upsert_documents(all_docs)
         print(f"  ✓ {inserted}개 Document 저장 완료")
@@ -125,7 +125,7 @@ def main():
     print("결과 요약")
     print_separator()
 
-    from storage.sqlite_store import get_total_count, get_category_distribution
+    from storage.supabase_store import get_total_count, get_category_distribution
     from utils.validators import validate_notion_block_ids
 
     total = get_total_count()

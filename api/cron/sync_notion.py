@@ -38,7 +38,7 @@ def _perform_incremental_sync() -> dict:
     """변경된 노션 페이지만 재수집 (cron 전용 로직)."""
     import json as _json
     from collectors.notion_collector import sync_notion_pages_incremental
-    from storage.sqlite_store import initialize_db, delete_by_source_origin, upsert_documents
+    from storage.supabase_store import initialize_db, delete_by_source_origin, upsert_documents
     from utils.validators import validate_notion_block_ids
 
     config_path = _root / "config.json"

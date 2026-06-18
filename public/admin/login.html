@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>동아리ON 운영 대시보드 — 로그인</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="login-wrap">
+  <div class="login-card">
+    <h1>동아리ON 운영 대시보드</h1>
+    <p class="muted">운영팀 계정으로 로그인해주세요.</p>
+    <form id="login-form">
+      <label for="email">이메일</label>
+      <input id="email" type="email" required autocomplete="username">
+      <label for="password">비밀번호</label>
+      <input id="password" type="password" required autocomplete="current-password">
+      <div id="login-error" class="error-text" style="margin-top: 10px; display: none;"></div>
+      <button id="login-button" type="submit" class="btn" style="width: 100%; margin-top: 18px; justify-content: center;">
+        로그인
+      </button>
+    </form>
+  </div>
+</div>
+<script>
+const form = document.getElementById("login-form");
+const button = document.getElementById("login-button");
+const errorEl = document.getElementById("login-error");
+
+if (sessionStorage.getItem("admin_token")) {
+  window.location.replace("index.html");
+}
+
+form.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  errorEl.style.display = "none";
+  button.disabled = true;
+  button.textContent = "로그인 중...";
+
+  try {
+    const res = await fetch("/api/admin/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        email: document.getElementById("email").value,
+        password: document.getElementById("password").value,
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      errorEl.textContent = data.detail || "로그인에 실패했습니다.";
+      errorEl.style.display = "block";
+      return;
+    }
+    sessionStorage.setItem("admin_token", data.access_token);
+    window.location.replace("index.html");
+  } catch (err) {
+    errorEl.textContent = "네트워크 오류가 발생했습니다.";
+    errorEl.style.display = "block";
+  } finally {
+    button.disabled = false;
+    button.textContent = "로그인";
+  }
+});
+</script>
+</body>
+</html>

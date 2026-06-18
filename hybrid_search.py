@@ -8,7 +8,6 @@
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -16,7 +15,7 @@ from rank_bm25 import BM25Okapi
 
 from embedding_manager import EmbeddingProvider
 from morpheme_analyzer import extract_keywords
-from storage.sqlite_store import get_all_with_embeddings
+from storage.supabase_store import get_all_with_embeddings
 
 logger = logging.getLogger(__name__)
 
@@ -66,12 +65,12 @@ class HybridSearchEngine:
         self._top_k = config.get("search_top_k", 5)
         self.similarity_threshold = config.get("similarity_threshold", 0.55)
 
-    def search(self, query: str, db_path: Optional[Path] = None) -> List[SearchResult]:
+    def search(self, query: str, conn=None) -> List[SearchResult]:
         """질의문에 대해 하이브리드 검색을 수행하고 상위 top_k개 결과를 반환합니다."""
         if not query or not query.strip():
             raise ValueError("검색어가 비어있습니다.")
 
-        corpus = get_all_with_embeddings(self._embedding_model, db_path)
+        corpus = get_all_with_embeddings(self._embedding_model, conn)
         if not corpus:
             logger.warning("검색 대상 문서가 없습니다 (지식DB 비어있음).")
             return []
@@ -91,7 +90,7 @@ class HybridSearchEngine:
         if any(doc_tokens):
             bm25 = BM25Okapi(doc_tokens)
             query_tokens = extract_keywords(query)
-            raw_bm25_scores = list(bm25.get_scores(query_tokens))
+            raw_bm25_scores = [float(s) for s in bm25.get_scores(query_tokens)]
         else:
             raw_bm25_scores = [0.0] * len(corpus)
 
