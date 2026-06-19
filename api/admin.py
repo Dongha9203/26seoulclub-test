@@ -283,10 +283,10 @@ class ApiParamsUpdate(BaseModel):
 
 @app.put("/settings/api-params")
 def update_api_params(req: ApiParamsUpdate, operator_email: str = Depends(get_current_operator)):
-    if req.max_question_length <= 0:
-        raise HTTPException(status_code=400, detail="max_question_length는 1 이상이어야 합니다.")
-    if req.rate_limit_per_minute <= 0:
-        raise HTTPException(status_code=400, detail="rate_limit_per_minute는 1 이상이어야 합니다.")
+    if not (1 <= req.max_question_length <= 2000):
+        raise HTTPException(status_code=400, detail="max_question_length는 1~2000 사이여야 합니다.")
+    if not (1 <= req.rate_limit_per_minute <= 100):
+        raise HTTPException(status_code=400, detail="rate_limit_per_minute는 1~100 사이여야 합니다.")
     from storage.settings_store import update_settings
     return update_settings({
         "max_question_length": req.max_question_length,

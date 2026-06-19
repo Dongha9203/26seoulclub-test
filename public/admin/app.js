@@ -652,13 +652,14 @@ async function renderApiParams(main) {
   const settings = await api("/settings");
   main.innerHTML = `<h1>챗봇 운영지침</h1>` + cardWithDetail(
     "남용 방지 설정", "",
-    "챗봇 위젯으로 들어오는 질문의 글자수 제한과, 같은 사용자(세션) 기준으로 분당 몇 번까지 질문할 수 있는지를 조정합니다.",
+    "챗봇 위젯으로 들어오는 질문의 글자수 제한과, 같은 사용자(세션) 기준으로 분당 몇 번까지 질문할 수 있는지를 조정합니다. " +
+    "최대 질문 글자수는 2000자, 분당 요청 제한은 100회까지만 설정할 수 있습니다(그 이상은 챗봇이 비정상적으로 사용될 위험이 있어 제한해두었습니다).",
     `
     <form id="api-params-form">
       <label>최대 질문 글자수 (max_question_length)</label>
-      <input type="number" name="max_question_length" min="1" value="${settings.max_question_length}" required>
+      <input type="number" name="max_question_length" min="1" max="2000" value="${settings.max_question_length}" required>
       <label>분당 요청 제한 (rate_limit_per_minute)</label>
-      <input type="number" name="rate_limit_per_minute" min="1" value="${settings.rate_limit_per_minute}" required>
+      <input type="number" name="rate_limit_per_minute" min="1" max="100" value="${settings.rate_limit_per_minute}" required>
       <div style="margin-top:14px; display:flex; align-items:center; gap:10px;">
         <button type="submit" class="btn">저장</button>
         <span id="api-params-result"></span>
