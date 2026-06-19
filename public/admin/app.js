@@ -387,7 +387,7 @@ async function renderKb(main) {
       <p class="muted">노션을 수정한 직후 바로 반영하려면 이 버튼을 사용하세요.</p>
     </div>
     ` + cardWithDetail(
-      "전체 문서 목록", "노션 소스는 조회 전용이며 삭제/수정 버튼이 비활성화됩니다.",
+      "전체 문서 목록", "노션 소스는 조회 전용이며 삭제 버튼이 비활성화됩니다.",
       `수동 업로드 가능한 소스 타입별 처리 방식:
        <table><thead><tr><th>소스 타입</th><th>처리 방식</th></tr></thead><tbody>${guideRows}</tbody></table>`,
       `
