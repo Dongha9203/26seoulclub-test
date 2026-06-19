@@ -110,7 +110,7 @@ const routes = {
   "daily-counts": renderDailyCounts,
   "qa-logs": renderQaLogs,
   "score-distribution": renderScoreDistribution,
-  "incomplete": () => renderActionList("incomplete", "불완전 답변 조회", "검색에 실패했거나 질문이 모호해서, 챗봇이 직접 답하지 않고 운영팀 연락처만 안내한 건"),
+  "incomplete": () => renderActionList("incomplete", "불완전 답변 조회", "검색에 실패했거나, 질문이 너무 모호해서(예: '이거 뭐예요?'처럼 무엇에 대한 질문인지 알 수 있는 단어가 없는 경우) 챗봇이 직접 답하지 않고 운영팀 연락처만 안내한 건"),
   "unresolved": () => renderActionList("unresolved", "미해결 답변 조회", "지식 베이스에 내용이 없거나, 프로그램과 무관한 질문(예: '오늘 날씨 어때요?')이라 답변할 수 없어서, 챗봇이 직접 답하지 않고 운영팀 연락처만 안내한 건"),
   "failure-report": renderFailureReport,
   "operation-team": renderOperationTeam,
