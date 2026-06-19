@@ -163,8 +163,9 @@ async function renderDailyCounts(main) {
   bindAccordions(main);
 }
 
-async function renderQaLogs(main) {
-  const data = await api("/monitoring/qa-logs?limit=50");
+async function renderQaLogs(main, page = 0) {
+  const limit = 30;
+  const data = await api(`/monitoring/qa-logs?limit=${limit}&offset=${page * limit}`);
   const rows = data.logs.map((l) => `
     <tr>
       <td>${escapeHtml(new Date(l.timestamp).toLocaleString("ko-KR"))}</td>
@@ -173,14 +174,23 @@ async function renderQaLogs(main) {
       <td>${l.failure_cause ? escapeHtml(l.failure_cause) : "-"}</td>
     </tr>
   `).join("");
+  const hasMore = data.logs.length === limit;
   main.innerHTML = `<h1>질의-답변 연계조회</h1>` + cardWithDetail(
-    "최근 질의-답변 50건", "사용자 질문과 챗봇 답변을 함께 보여줍니다.",
+    "최근 질의-답변 (한 번에 최대 30건)", "사용자 질문과 챗봇 답변을 함께 보여줍니다.",
     "사용자의 질문과 챗봇이 실제로 보낸 답변을 짝지어 확인할 수 있는 화면입니다.",
-    data.logs.length
+    (data.logs.length
       ? `<table><thead><tr><th>시각</th><th>질문</th><th>답변</th><th>실패원인</th></tr></thead><tbody>${rows}</tbody></table>`
-      : `<p class="muted">아직 기록된 로그가 없습니다.</p>`
+      : `<p class="muted">아직 기록된 로그가 없습니다.</p>`)
+    + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
+        <span>페이지 ${page + 1}</span>
+        <button id="qa-logs-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
+      </div>`
   );
   bindAccordions(main);
+
+  document.getElementById("qa-logs-more").addEventListener("click", () => {
+    renderQaLogs(main, page + 1);
+  });
 }
 
 async function renderScoreDistribution(main) {
@@ -221,10 +231,11 @@ async function renderScoreDistribution(main) {
 
 // ── ② 조치관리 ─────────────────────────────────────────────────
 
-async function renderActionList(endpoint, title, subtitle) {
+async function renderActionList(endpoint, title, subtitle, page = 0) {
   const main = document.getElementById("main");
+  const limit = 30;
   const [data, faqUrlData] = await Promise.all([
-    api(`/actions/${endpoint}?limit=50`),
+    api(`/actions/${endpoint}?limit=${limit}&offset=${page * limit}`),
     api("/kb/notion-faq-url"),
   ]);
 
@@ -245,14 +256,23 @@ async function renderActionList(endpoint, title, subtitle) {
     </tr>
   `).join("");
 
+  const hasMore = data.logs.length === limit;
   main.innerHTML = `<h1>${escapeHtml(title)}</h1>` + cardWithDetail(
     title, subtitle,
     "조치 상태를 대기 → 처리중 → 완료로 직접 바꿀 수 있습니다. \"노션에서 추가하기\"는 질문을 클립보드에 복사하고 노션 FAQ 페이지를 새 탭으로 엽니다 (등록 폼은 따로 없습니다 — 실제 입력은 노션에서 직접 합니다).",
-    data.logs.length
+    (data.logs.length
       ? `<table><thead><tr><th>시각</th><th>질문</th><th>실패원인</th><th>상태</th><th>변경</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
-      : `<p class="muted">해당 조건에 해당하는 항목이 없습니다.</p>`
+      : `<p class="muted">해당 조건에 해당하는 항목이 없습니다.</p>`)
+    + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
+        <span>페이지 ${page + 1}</span>
+        <button id="action-list-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
+      </div>`
   );
   bindAccordions(main);
+
+  document.getElementById("action-list-more").addEventListener("click", () => {
+    renderActionList(endpoint, title, subtitle, page + 1);
+  });
 
   main.querySelectorAll(".status-select").forEach((sel) => {
     const previousValue = sel.value;
