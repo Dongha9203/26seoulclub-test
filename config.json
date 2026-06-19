@@ -1,8 +1,8 @@
 {
   "notion_pages": {
-    "main": "{{NOTION_MAIN_URL}}",
-    "integrated_system": "{{NOTION_INTEGRATED_SYSTEM_URL}}",
-    "faq": "{{NOTION_FAQ_URL}}"
+    "main": "https://mango-popcorn-6ba.notion.site/2026-ON-3293d6d0ed1680d4815cee18ecaaa0b4",
+    "integrated_system": "https://mango-popcorn-6ba.notion.site/37a3d6d0ed16800daf46eb5a8bcf1ce3",
+    "faq": ""
   },
   "google_sheets": [],
   "embedding_model": "voyage-4",
