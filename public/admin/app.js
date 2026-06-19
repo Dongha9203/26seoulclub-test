@@ -110,8 +110,8 @@ const routes = {
   "daily-counts": renderDailyCounts,
   "qa-logs": renderQaLogs,
   "score-distribution": renderScoreDistribution,
-  "incomplete": () => renderActionList("incomplete", "불완전 답변 조회", "failure_cause가 검색실패 또는 질문모호성인 건"),
-  "unresolved": () => renderActionList("unresolved", "미해결 답변 조회", "failure_cause가 지식DB공백 또는 정책밖요청인 건"),
+  "incomplete": () => renderActionList("incomplete", "불완전 답변 조회", "검색에 실패했거나 질문이 모호해서 충분히 답하지 못한 건"),
+  "unresolved": () => renderActionList("unresolved", "미해결 답변 조회", "지식 베이스에 내용이 없거나 정책상 답변할 수 없어 안내만 한 건"),
   "failure-report": renderFailureReport,
   "operation-team": renderOperationTeam,
   "kb": renderKb,
@@ -154,7 +154,7 @@ async function renderDailyCounts(main) {
     (d) => `<tr><td>${escapeHtml(d.day)}</td><td>${d.count}</td></tr>`
   ).join("");
   main.innerHTML = `<h1>일별 질의/응답 건수</h1>` + cardWithDetail(
-    "최근 30일 집계", "qa_log 테이블을 날짜별로 집계합니다.",
+    "최근 30일 집계", "최근 30일간 날짜별로 집계한 결과입니다.",
     "매일 챗봇에 들어온 질문 수를 날짜별로 보여줍니다. 운영 추이를 파악하는 데 사용합니다.",
     data.daily_counts.length
       ? `<table><thead><tr><th>날짜</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
@@ -174,7 +174,7 @@ async function renderQaLogs(main) {
     </tr>
   `).join("");
   main.innerHTML = `<h1>질의-답변 연계조회</h1>` + cardWithDetail(
-    "최근 질의-답변 50건", "question/answer 필드를 함께 보여줍니다.",
+    "최근 질의-답변 50건", "사용자 질문과 챗봇 답변을 함께 보여줍니다.",
     "사용자의 질문과 챗봇이 실제로 보낸 답변을 짝지어 확인할 수 있는 화면입니다.",
     data.logs.length
       ? `<table><thead><tr><th>시각</th><th>질문</th><th>답변</th><th>실패원인</th></tr></thead><tbody>${rows}</tbody></table>`
@@ -188,8 +188,8 @@ async function renderScoreDistribution(main) {
   const labels = Object.keys(data.distribution);
   const values = Object.values(data.distribution);
   main.innerHTML = `<h1>신뢰도 분포 차트</h1>` + cardWithDetail(
-    "top_score 분포 (0.0~1.0, 0.1 단위)", "",
-    "검색 결과의 신뢰도 점수(top_score)가 어느 구간에 가장 많이 분포하는지 보여줍니다. threshold 조정 시 참고용입니다.",
+    "신뢰도 점수 분포 (0.0~1.0, 0.1 단위 구간)", "",
+    "검색 결과의 신뢰도 점수가 어느 구간에 가장 많이 분포하는지 보여줍니다. '신뢰도 threshold 조정' 메뉴에서 기준값을 바꿀 때 참고하면 됩니다.",
     `<canvas id="score-chart" height="120"></canvas>`
   );
   bindAccordions(main);
@@ -288,7 +288,7 @@ async function renderFailureReport(main) {
     ([cause, cnt]) => `<tr><td>${escapeHtml(cause)}</td><td>${cnt}</td></tr>`
   ).join("");
   main.innerHTML = `<h1>원인별 집계 리포트</h1>` + cardWithDetail(
-    "failure_cause 4종 집계", "",
+    "실패 원인별 집계", "",
     "검색 실패의 원인을 지식DB공백/검색실패/질문모호성/정책밖요청 4가지로 분류해 건수를 보여줍니다.",
     `<table><thead><tr><th>원인</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
   );
@@ -646,7 +646,7 @@ async function renderApiParams(main) {
   const settings = await api("/settings");
   main.innerHTML = `<h1>API 운영 파라미터</h1>` + cardWithDetail(
     "남용 방지 설정", "",
-    "공개 챗봇 API(/api/chat)의 질문 글자수 제한과, 같은 session_id 기준 분당 요청 제한 횟수를 조정합니다.",
+    "챗봇 위젯으로 들어오는 질문의 글자수 제한과, 같은 사용자(세션) 기준으로 분당 몇 번까지 질문할 수 있는지를 조정합니다.",
     `
     <form id="api-params-form">
       <label>최대 질문 글자수 (max_question_length)</label>
