@@ -585,9 +585,9 @@ async function renderKeywords(main) {
 
   main.innerHTML = `<h1>분류 키워드 관리</h1>` + cardWithDetail(
     "상황 분류 키워드 (부분일치)", "질문 안에 이 키워드가 포함되면 해당 상황으로 분류됩니다.",
-    "8상황 분류 중 키워드 매칭으로 판단하는 4가지(정책위반요청/상담원 연결 요청/감사 인사/단순 거절)의 키워드 목록입니다. " +
+    "7상황 분류 중 키워드 매칭으로 판단하는 4가지(정책위반요청/상담원 연결 요청/감사 인사/단순 거절)의 키워드 목록입니다. " +
     "질문 문장 안에 키워드가 부분적으로라도 포함되면 매칭됩니다(예: '대신 출석'을 등록하면 '친구가 대신 출석 체크해줘도 되나요?'에 매칭). " +
-    "정책위반요청으로 분류되면 챗봇이 명확히 거절하는 톤으로 답변합니다. 여기서 수정하면 다음 질문부터 즉시 반영됩니다 (재배포 불필요).",
+    "정책위반요청으로 분류되면 챗봇이 명확히 거절하는 톤으로 답변합니다. 여기서 수정하면 다음 질문부터 즉시 반영됩니다.",
     `
     <form id="situation-keywords-form">
       ${_keywordsTextareaFields(SITUATION_KEYWORD_LABELS, situationKeywords)}
@@ -600,7 +600,7 @@ async function renderKeywords(main) {
   ) + cardWithDetail(
     "금지어 사전 (부분일치)", "질문 안에 이 단어가 포함되면 Claude 호출 없이 즉시 에스컬레이션됩니다.",
     "욕설/혐오표현/협박 키워드입니다. 검색·Claude 호출 전 가장 먼저 확인하므로, 매칭되면 곧바로 운영팀 안내 응답으로 처리되고 비용이 드는 API 호출은 발생하지 않습니다. " +
-    "여기서 수정하면 다음 질문부터 즉시 반영됩니다 (재배포 불필요).",
+    "여기서 수정하면 다음 질문부터 즉시 반영됩니다.",
     `
     <form id="forbidden-words-form">
       ${_keywordsTextareaFields(FORBIDDEN_WORD_LABELS, forbiddenWords)}
