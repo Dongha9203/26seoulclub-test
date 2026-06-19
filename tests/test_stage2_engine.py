@@ -498,6 +498,18 @@ class TestPromptBuilder:
         prompt = build_system_prompt("톤지침", [], low_confidence=False)
         assert "(없음)" in prompt
 
+    def test_build_system_prompt_with_contact_includes_verbatim_and_no_fabrication_clause(self):
+        from prompt_builder import build_system_prompt
+        contact = "서울 동아리ON 운영팀\n- 전화: 02-0000-0000\n- 이메일: ops@test.com"
+        prompt = build_system_prompt("톤지침", [], low_confidence=False, operation_team_contact=contact)
+        assert contact in prompt
+        assert "지어내지" in prompt
+
+    def test_build_system_prompt_without_contact_has_no_contact_clause(self):
+        from prompt_builder import build_system_prompt
+        prompt = build_system_prompt("톤지침", [], low_confidence=False)
+        assert "지어내지" not in prompt
+
     def test_call_claude_parses_tool_use_response(self):
         from prompt_builder import call_claude
 
@@ -674,6 +686,60 @@ class TestChatbotEngine:
 
         assert "02-0000-0000" in response.answer
         assert "ops@test.com" in response.answer
+
+    def test_handle_question_escalation_request_skips_llm_and_returns_contact(self, engine):
+        from hybrid_search import SearchResult
+        from tone_matrix import Situation, ResponseAttitude
+
+        results = [SearchResult(
+            doc_id="d1", title="가입 절차", content="온라인 신청서를 작성하면 됩니다.",
+            category="가입 및 자격 안내", source_type="notion",
+            notion_block_id="12345678-1234-1234-1234-123456789abc",
+            notion_page_url="https://notion.so/abc", vector_score=0.8, bm25_score=0.8,
+            combined_score=0.8,
+        )]
+        engine._search_engine.search.return_value = results
+        engine._search_engine.is_confident.return_value = True
+
+        response = engine.handle_question("그냥 상담원 연결해주세요", "session-9")
+
+        assert response.situation == Situation.ESCALATION_NEEDED
+        assert response.response_attitude == ResponseAttitude.ESCALATION
+        assert response.escalated_to_operation_team is True
+        assert "02-0000-0000" in response.answer
+        assert "ops@test.com" in response.answer
+        engine._anthropic_client.messages.create.assert_not_called()
+
+    def test_handle_question_info_gap_passes_real_contact_into_prompt(self, engine):
+        from hybrid_search import SearchResult
+        from tone_matrix import Situation
+
+        results = [SearchResult(
+            doc_id="d1", title="출결 기준", content="정기모임 80% 이상 출석해야 합니다.",
+            category="출결 및 활동기준 안내", source_type="notion",
+            notion_block_id="12345678-1234-1234-1234-123456789abc",
+            notion_page_url="https://notion.so/abc", vector_score=0.8, bm25_score=0.8,
+            combined_score=0.8,
+        )]
+        engine._search_engine.search.return_value = results
+        engine._search_engine.is_confident.return_value = True
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = "provide_answer"
+        block.input = {"answer": "해당 내용은 안내 자료에 없어 운영팀 문의가 필요합니다.",
+                       "sentiment_score": 0.0}
+        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+
+        # 질문 카테고리(수당 지급 기준 안내)와 검색결과 카테고리(출결 및 활동기준 안내)를
+        # 불일치시켜 INFO_GAP으로 분류되게 함
+        response = engine.handle_question("수당 지급 기준이 뭐예요?", "session-10")
+
+        assert response.situation == Situation.INFO_GAP
+        system_prompt = engine._anthropic_client.messages.create.call_args.kwargs["system"]
+        assert "02-0000-0000" in system_prompt
+        assert "ops@test.com" in system_prompt
+        assert "지어내지" in system_prompt
 
     def test_handle_question_logs_qa_log_entry(self, engine, pg_conn):
         engine._search_engine.search.return_value = []

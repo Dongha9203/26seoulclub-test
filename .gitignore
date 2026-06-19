@@ -1,5 +1,6 @@
 # 민감정보
 .env
+.env.bak*
 
 # Python
 __pycache__/

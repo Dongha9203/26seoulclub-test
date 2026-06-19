@@ -240,12 +240,43 @@ class ChatbotEngine:
             top_result_category=results[0].category, repeated_count=repeated_count,
             sentiment_score=0.0,
         ))
+        # ── 상담원 연결 요청은 연락처 정확성이 최우선이므로 Claude를 거치지
+        # 않고 고정 템플릿으로 즉시 응답합니다 (욕설필터/검색실패와 동일한 원칙).
+        if situation == Situation.ESCALATION_NEEDED:
+            answer = (
+                "네, 직접 상담을 도와드릴게요. 아래 운영팀 연락처로 문의해 주시면 "
+                "담당자가 안내해 드립니다.\n\n" + _format_operation_team_contact(self._config)
+            )
+            response = ChatbotResponse(
+                answer=answer, situation=situation, response_attitude=ResponseAttitude.ESCALATION,
+                failure_cause=None, sentiment_score=None, search_success=True,
+                blocked_by_filter=False, escalated_to_operation_team=True,
+                top_score=results[0].combined_score, deep_link=None,
+                repeated_count=repeated_count, category=category, keywords=keywords,
+            )
+            self._write_log({
+                "log_id": log_id, "timestamp": timestamp, "session_id": session_id,
+                "question": question, "keywords": keywords, "question_category": category,
+                "blocked_by_filter": False, "search_success": True,
+                "top_score": results[0].combined_score, "failure_cause": None,
+                "situation": situation.value, "response_attitude": ResponseAttitude.ESCALATION.value,
+                "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
+                "matched_doc_ids": [], "deep_link": None,
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+            })
+            return response
+
         attitude = SITUATION_TO_ATTITUDE[situation]
 
         # ── step: 톤 지침 생성 → Claude API 1회 호출 ─────────────────────
         tone_instruction = self._tone_builder.build_instruction(situation)
         low_confidence = situation == Situation.INFO_GAP
-        system_prompt = build_system_prompt(tone_instruction, results, low_confidence)
+        # 정보부재 상황은 Claude가 운영팀 연락을 안내해야 하므로 실제 연락처를
+        # 프롬프트에 그대로 박아 넣어 지어내지 못하게 합니다.
+        operation_team_contact = (
+            _format_operation_team_contact(self._config) if situation == Situation.INFO_GAP else None
+        )
+        system_prompt = build_system_prompt(tone_instruction, results, low_confidence, operation_team_contact)
         answer, sentiment_score = call_claude(
             self._anthropic_client, self._llm_model, system_prompt, question
         )
