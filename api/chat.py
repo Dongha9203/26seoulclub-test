@@ -82,7 +82,7 @@ class ChatResponse(BaseModel):
     deep_link: Optional[str] = None
 
 
-@app.post("/", response_model=ChatResponse)
+@app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     from storage.supabase_store import count_recent_requests
     from chatbot_engine import ChatbotEngine
