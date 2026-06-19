@@ -384,7 +384,7 @@ async function renderKb(main) {
         <button id="notion-refresh-btn" class="btn">지금 갱신</button>
       </div>
       <div id="notion-refresh-result" style="margin-top: 10px;"></div>
-      <p class="muted">Vercel Hobby 플랜의 자동 Cron은 하루 1회만 동작합니다. 노션을 수정한 직후 바로 반영하려면 이 버튼을 사용하세요.</p>
+      <p class="muted">노션을 수정한 직후 바로 반영하려면 이 버튼을 사용하세요.</p>
     </div>
     ` + cardWithDetail(
       "전체 문서 목록", "노션 소스는 조회 전용이며 삭제/수정 버튼이 비활성화됩니다.",
