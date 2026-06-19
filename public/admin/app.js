@@ -182,12 +182,16 @@ async function renderQaLogs(main, page = 0) {
       ? `<table><thead><tr><th>시각</th><th>질문</th><th>답변</th><th>실패원인</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p class="muted">아직 기록된 로그가 없습니다.</p>`)
     + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
+        <button id="qa-logs-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
         <span>페이지 ${page + 1}</span>
         <button id="qa-logs-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
       </div>`
   );
   bindAccordions(main);
 
+  document.getElementById("qa-logs-prev").addEventListener("click", () => {
+    renderQaLogs(main, page - 1);
+  });
   document.getElementById("qa-logs-more").addEventListener("click", () => {
     renderQaLogs(main, page + 1);
   });
@@ -264,12 +268,16 @@ async function renderActionList(endpoint, title, subtitle, page = 0) {
       ? `<table><thead><tr><th>시각</th><th>질문</th><th>실패원인</th><th>상태</th><th>변경</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p class="muted">해당 조건에 해당하는 항목이 없습니다.</p>`)
     + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
+        <button id="action-list-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
         <span>페이지 ${page + 1}</span>
         <button id="action-list-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
       </div>`
   );
   bindAccordions(main);
 
+  document.getElementById("action-list-prev").addEventListener("click", () => {
+    renderActionList(endpoint, title, subtitle, page - 1);
+  });
   document.getElementById("action-list-more").addEventListener("click", () => {
     renderActionList(endpoint, title, subtitle, page + 1);
   });
