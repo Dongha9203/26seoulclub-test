@@ -323,6 +323,42 @@ def delete_document(doc_id: str, operator_email: str = Depends(get_current_opera
     return {"status": "ok"}
 
 
+@app.post("/kb/documents/{doc_id}/embed")
+def embed_document(doc_id: str, operator_email: str = Depends(get_current_operator)):
+    from storage.supabase_store import get_connection, update_embedding
+    from embedding_manager import get_embedding_provider
+
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT title, content, is_editable FROM documents WHERE doc_id = %s", (doc_id,)
+            )
+            row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 문서입니다.")
+    if not row["is_editable"]:
+        raise HTTPException(
+            status_code=403,
+            detail="노션 소스 문서는 이 기능으로 반영할 수 없습니다. '지금 갱신'을 사용해주세요.",
+        )
+
+    config = _load_static_config()
+    model = config.get("embedding_model")
+    try:
+        provider = get_embedding_provider(config)
+        embedding = provider.embed_documents([row["title"] + " " + row["content"]])[0]
+    except Exception as e:
+        logger.exception("문서 임베딩 생성 중 오류")
+        raise HTTPException(status_code=502, detail=f"지식베이스 반영에 실패했습니다: {e}")
+
+    update_embedding(doc_id, embedding, model)
+    return {"status": "ok"}
+
+
 _COLLECTOR_BY_EXT = {".docx": "docx", ".pdf": "pdf", ".xlsx": "excel"}
 
 

@@ -365,6 +365,7 @@ async function renderKb(main) {
       <td>${escapeHtml(d.source_origin)}</td>
       <td>${escapeHtml(d.category)}</td>
       <td>
+        ${d.is_editable ? `<button class="btn btn-secondary" data-embed="${d.doc_id}">갱신</button>` : ""}
         <button class="btn btn-danger" data-delete="${d.doc_id}" ${d.is_editable ? "" : "disabled"}>삭제</button>
       </td>
     </tr>
@@ -389,7 +390,8 @@ async function renderKb(main) {
     ` + cardWithDetail(
       "전체 문서 목록", "노션 소스는 조회 전용이며 삭제 버튼이 비활성화됩니다.",
       `수동 업로드 가능한 소스 타입별 처리 방식:
-       <table><thead><tr><th>소스 타입</th><th>처리 방식</th></tr></thead><tbody>${guideRows}</tbody></table>`,
+       <table><thead><tr><th>소스 타입</th><th>처리 방식</th></tr></thead><tbody>${guideRows}</tbody></table>
+       <p style="margin-top:10px;">파일 업로드나 구글 스프레드시트로 추가한 문서는 목록에 바로 보이지만, "갱신" 버튼을 눌러 확인해줘야 챗봇이 실제로 그 내용을 찾아 답변할 수 있습니다.</p>`,
       `
       <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:16px;">
         <div>
@@ -439,6 +441,21 @@ async function renderKb(main) {
         renderKb(main);
       } catch (err) {
         alert("삭제 실패: " + err.message);
+      }
+    });
+  });
+
+  main.querySelectorAll("[data-embed]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("이 문서를 지식베이스에 반영하시겠습니까?")) return;
+      btn.disabled = true;
+      try {
+        await api(`/kb/documents/${btn.dataset.embed}/embed`, { method: "POST" });
+        alert("지식베이스에 반영되었습니다.");
+      } catch (err) {
+        alert("반영 실패: " + err.message);
+      } finally {
+        btn.disabled = false;
       }
     });
   });
