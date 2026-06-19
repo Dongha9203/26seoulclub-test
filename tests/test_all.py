@@ -390,6 +390,7 @@ class TestNotionCollector:
     def test_heading_chunking(self):
         """heading 단위로 청킹되는지 확인."""
         from collectors.notion_collector import _chunk_by_headings
+        mock_client = MagicMock()
         blocks = [
             {"id": "h1", "type": "heading_1",
              "heading_1": {"rich_text": [{"plain_text": "1장"}]},
@@ -404,12 +405,34 @@ class TestNotionCollector:
              "paragraph": {"rich_text": [{"plain_text": "2장 내용"}]},
              "has_children": False},
         ]
-        docs = _chunk_by_headings(blocks, "테스트페이지", "https://notion.so/xxx")
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
         assert len(docs) == 2
         assert docs[0].title == "1장"
         assert docs[1].title == "2장"
         assert docs[0].notion_block_id == "h1"
         assert docs[1].notion_block_id == "h2"
+
+    def test_toggleable_heading_chunking(self):
+        """토글 가능한 heading(본문이 형제가 아니라 자식 블록에 있는 경우)도 내용을 수집하는지 확인."""
+        from collectors.notion_collector import _chunk_by_headings
+        mock_client = MagicMock()
+        mock_client.blocks.children.list.return_value = {
+            "results": [
+                {"id": "c1", "type": "paragraph",
+                 "paragraph": {"rich_text": [{"plain_text": "토글 안의 실제 내용"}]},
+                 "has_children": False},
+            ],
+            "has_more": False,
+        }
+        blocks = [
+            {"id": "h1", "type": "heading_3",
+             "heading_3": {"rich_text": [{"plain_text": "1. 활동 종료 후"}], "is_toggleable": True},
+             "has_children": True},
+        ]
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        assert len(docs) == 1
+        assert docs[0].title == "1. 활동 종료 후"
+        assert "토글 안의 실제 내용" in docs[0].content
 
     def test_collect_notion_page_empty(self):
         """빈 페이지는 빈 리스트 반환."""

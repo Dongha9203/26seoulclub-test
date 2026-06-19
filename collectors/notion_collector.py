@@ -118,7 +118,7 @@ def _chunk_page_blocks(
     has_headings = any(b["type"] in HEADING_TYPES for b in non_toggle)
 
     if has_headings:
-        docs = _chunk_by_headings(non_toggle, source_origin, notion_page_url)
+        docs = _chunk_by_headings(client, non_toggle, source_origin, notion_page_url)
         documents.extend(docs)
     elif non_toggle:
         docs = _chunk_fallback(non_toggle, source_origin, notion_page_url)
@@ -128,11 +128,18 @@ def _chunk_page_blocks(
 
 
 def _chunk_by_headings(
+    client: Client,
     blocks: List[dict],
     source_origin: str,
     notion_page_url: str,
 ) -> List[Document]:
-    """heading_{1,2,3} 기준으로 블록을 묶어 Document 리스트 반환."""
+    """heading_{1,2,3} 기준으로 블록을 묶어 Document 리스트 반환.
+
+    Notion의 "토글 가능한 heading"은 본문이 형제 블록이 아니라 heading 자신의
+    자식 블록으로 들어가므로, heading에 has_children이 있으면 자식을 재귀
+    수집해 content_parts에 포함시킵니다(접지 않은 일반 heading의 형제 블록
+    수집과 함께 동작).
+    """
     documents: List[Document] = []
     current_heading_block: Optional[dict] = None
     current_block_id: Optional[str] = None
@@ -158,6 +165,10 @@ def _chunk_by_headings(
             flush()
             current_heading_block = block
             current_block_id = block["id"]
+            if block.get("has_children"):
+                children_text = _fetch_toggle_children_text(client, block["id"])
+                if children_text:
+                    content_parts.append(children_text)
         else:
             if current_block_id is None:
                 # heading 이전 블록(서론)
