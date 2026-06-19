@@ -650,7 +650,7 @@ async function renderKeywords(main) {
 
 async function renderApiParams(main) {
   const settings = await api("/settings");
-  main.innerHTML = `<h1>API 운영 파라미터</h1>` + cardWithDetail(
+  main.innerHTML = `<h1>챗봇 운영지침</h1>` + cardWithDetail(
     "남용 방지 설정", "",
     "챗봇 위젯으로 들어오는 질문의 글자수 제한과, 같은 사용자(세션) 기준으로 분당 몇 번까지 질문할 수 있는지를 조정합니다.",
     `
