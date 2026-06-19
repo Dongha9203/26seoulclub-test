@@ -189,7 +189,10 @@ async function renderScoreDistribution(main) {
   const values = Object.values(data.distribution);
   main.innerHTML = `<h1>신뢰도 분포 차트</h1>` + cardWithDetail(
     "신뢰도 점수 분포 (0.0~1.0, 0.1 단위 구간)", "",
-    "검색 결과의 신뢰도 점수가 어느 구간에 가장 많이 분포하는지 보여줍니다. '신뢰도 threshold 조정' 메뉴에서 기준값을 바꿀 때 참고하면 됩니다.",
+    "가로축은 신뢰도 점수 구간(0.0~1.0), 세로축은 그 구간에 해당하는 질문 건수입니다. " +
+    "점수가 0에 가까울수록 챗봇이 질문과 관련된 내용을 거의 찾지 못했다는 뜻이고, " +
+    "1에 가까울수록 질문과 일치하는 내용을 확실하게 찾았다는 뜻입니다. " +
+    "'신뢰도 threshold 조정' 메뉴에서 기준값을 바꿀 때 참고하면 됩니다.",
     `<canvas id="score-chart" height="120"></canvas>`
   );
   bindAccordions(main);
@@ -208,7 +211,10 @@ async function renderScoreDistribution(main) {
     options: {
       responsive: true,
       plugins: { legend: { display: false } },
-      scales: { y: { beginAtZero: true, ticks: { precision: 0 } } },
+      scales: {
+        x: { title: { display: true, text: "신뢰도 점수 구간" } },
+        y: { beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: "질문 건수" } },
+      },
     },
   });
 }
