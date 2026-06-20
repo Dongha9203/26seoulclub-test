@@ -459,7 +459,14 @@ def refresh_notion(operator_email: str = Depends(get_current_operator)):
             summary_parts.append(f"{name} 건너뜀({info.get('reason', '')})")
         else:
             summary_parts.append(f"{name} {info.get('doc_count', 0)}건 변경")
-    result["summary_text"] = ", ".join(summary_parts) if summary_parts else "변경 없음"
+    summary_text = ", ".join(summary_parts) if summary_parts else "변경 없음"
+
+    embedding = result.get("embedding") or {}
+    if embedding.get("embedded"):
+        summary_text += f" / 임베딩 {embedding['embedded']}건 반영"
+    if embedding.get("failed"):
+        summary_text += f" (임베딩 실패 {embedding['failed']}건, 잠시 후 다시 시도해주세요)"
+    result["summary_text"] = summary_text
     result["last_synced_at"] = now
     return result
 

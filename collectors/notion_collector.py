@@ -5,6 +5,12 @@ Notion 페이지 수집 모듈.
   1단계 — toggle 우선 분리: toggle 블록 + 자식 전체 → 독립 Document
   2단계 — 나머지는 heading 단위 보완: heading_{1,2,3} 사이 블록 묶음 → Document
   fallback — heading/toggle 모두 없으면 800자 단위 균등 분할 (경고 로그)
+
+하위 페이지 재귀 수집:
+  column_list/column/synced_block처럼 레이아웃만 담당하는 컨테이너와 callout은
+  내용을 펼쳐서 위 청킹 로직이 그대로 보게 하고, 그 안에서 발견되는 child_page는
+  별도 페이지로 분리해 자신의 공개 URL을 다시 조회한 뒤 재귀적으로 수집합니다.
+  child_database(자료실 등)는 블록 API로 내용을 알 수 없어 현재는 건너뜁니다.
 """
 
 import logging
@@ -22,6 +28,12 @@ logger = logging.getLogger(__name__)
 
 FALLBACK_CHUNK_SIZE = 800
 HEADING_TYPES = {"heading_1", "heading_2", "heading_3"}
+MAX_NESTING_DEPTH = 5
+
+# 레이아웃 전용 컨테이너: 자신은 버리고 자식만 펼칩니다 (own text 없음).
+TRANSPARENT_CONTAINER_TYPES = {"column_list", "column", "synced_block"}
+# 자체 텍스트가 있을 수 있는 컨테이너: 자신은 남기고 자식도 이어붙입니다.
+TEXT_CONTAINER_TYPES = {"callout"}
 
 
 # ---------------------------------------------------------------------------
@@ -63,6 +75,51 @@ def _fetch_toggle_children_text(client: Client, block_id: str, depth: int = 0) -
             if nested:
                 parts.append(nested)
     return "\n".join(parts)
+
+
+def _resolve_page_url(client: Client, page_id: str) -> Optional[str]:
+    """하위 페이지의 공개 URL을 조회합니다 (공개 공유된 public_url 우선, 없으면 내부 url)."""
+    try:
+        page = client.pages.retrieve(page_id=page_id)
+    except APIResponseError as e:
+        logger.error("하위 페이지 URL 조회 실패 (id=%s): %s", page_id, e)
+        return None
+    return page.get("public_url") or page.get("url")
+
+
+def _expand_blocks(
+    client: Client, blocks: List[dict], depth: int = 0,
+) -> Tuple[List[dict], List[Tuple[str, str]]]:
+    """column_list/column/synced_block/callout을 펼쳐 청킹 로직이 보는 블록 목록을
+    만들고, 그 안에서 발견되는 child_page는 (id, title) 목록으로 따로 모아 반환합니다.
+    toggle/heading은 자신만 그대로 두고 자식은 펼치지 않습니다 — 그 자식들은 이미
+    `_chunk_page_blocks`/`_chunk_by_headings`가 각자의 방식으로 따라가기 때문입니다.
+    """
+    expanded: List[dict] = []
+    nested_pages: List[Tuple[str, str]] = []
+    if depth > MAX_NESTING_DEPTH:
+        return expanded, nested_pages
+
+    for block in blocks:
+        btype = block["type"]
+
+        if btype == "child_page":
+            nested_pages.append((block["id"], block.get("child_page", {}).get("title", "")))
+            continue
+        if btype == "child_database":
+            logger.info("child_database는 현재 수집 대상이 아닙니다. 건너뜁니다 (id=%s).", block["id"])
+            continue
+
+        if btype not in TRANSPARENT_CONTAINER_TYPES:
+            expanded.append(block)
+
+        if block.get("has_children") and btype in (TRANSPARENT_CONTAINER_TYPES | TEXT_CONTAINER_TYPES):
+            children = _fetch_all_blocks(client, block["id"])
+            child_expanded, child_nested = _expand_blocks(client, children, depth + 1)
+            expanded.extend(child_expanded)
+            nested_pages.extend(child_nested)
+
+    return expanded, nested_pages
 
 
 def _make_document(
@@ -227,11 +284,22 @@ def collect_notion_page(
     page_id: str,
     page_name: str,
     notion_page_url: str,
+    _visited: Optional[set] = None,
 ) -> List[Document]:
     """
     단일 Notion 페이지를 수집해 Document 리스트를 반환합니다.
     page_id: UUID 형식 또는 하이픈 없는 32자 hex
+
+    페이지 안에 column_list/callout 등으로 감싸인 하위 페이지(child_page)가 있으면
+    각각의 공개 URL을 다시 조회해 재귀적으로 수집합니다 (_visited로 순환 참조 방지).
     """
+    if _visited is None:
+        _visited = set()
+    if page_id in _visited:
+        logger.warning("이미 수집한 페이지라 건너뜁니다 (순환 참조 방지): %s (id=%s)", page_name, page_id)
+        return []
+    _visited.add(page_id)
+
     logger.info("Notion 수집 시작: %s (id=%s)", page_name, page_id)
     blocks = _fetch_all_blocks(client, page_id)
     logger.info("  블록 수: %d", len(blocks))
@@ -240,8 +308,17 @@ def collect_notion_page(
         logger.warning("  '%s' 페이지가 비어있습니다.", page_name)
         return []
 
-    docs = _chunk_page_blocks(client, blocks, page_name, notion_page_url)
+    expanded_blocks, nested_pages = _expand_blocks(client, blocks)
+    docs = _chunk_page_blocks(client, expanded_blocks, page_name, notion_page_url)
     logger.info("  생성된 Document 수: %d", len(docs))
+
+    for sub_id, sub_title in nested_pages:
+        sub_url = _resolve_page_url(client, sub_id)
+        if not sub_url:
+            logger.warning("  하위 페이지 URL을 확인할 수 없어 건너뜁니다: %s (id=%s)", sub_title, sub_id)
+            continue
+        docs.extend(collect_notion_page(client, sub_id, sub_title or page_name, sub_url, _visited))
+
     return docs
 
 
@@ -346,11 +423,19 @@ def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Documen
     변경된 페이지만 재수집합니다 (cron 엔드포인트용).
     sync_metadata 테이블의 last_notion_edited_time과 비교합니다.
 
+    최상위 페이지 자신의 수정 시각뿐 아니라, 재귀로 발견된 하위 페이지(child_page)
+    각각의 수정 시각도 "{key}::{notion_page_id}" 키로 따로 추적합니다. 노션은 하위
+    페이지만 수정해도 상위 페이지의 last_edited_time을 갱신하지 않으므로, 하위 페이지
+    추적 없이는 그 변경이 영원히 감지되지 않습니다.
+
     Returns:
         (updated_docs, summary)
     """
     from datetime import datetime, timezone
-    from storage.supabase_store import get_sync_metadata, upsert_sync_metadata
+    from storage.supabase_store import (
+        get_sync_metadata, upsert_sync_metadata,
+        get_sync_metadata_children, delete_sync_metadata_children,
+    )
 
     token = os.environ.get("NOTION_API_TOKEN")
     if not token:
@@ -375,15 +460,26 @@ def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Documen
 
         page_id = extract_page_id(url)
 
-        # 마지막 수정 시각 확인
+        # 마지막 수정 시각 확인 (최상위 페이지)
         last_edited = get_page_last_edited_time(client, page_id)
         if last_edited is None:
             summary[key] = {"page_name": page_name, "skipped": True, "reason": "페이지 조회 실패"}
             continue
 
-        # 이전 동기화 기록과 비교
         meta = get_sync_metadata(key, conn)
-        if meta and meta["last_notion_edited_time"] == last_edited:
+        top_changed = not (meta and meta["last_notion_edited_time"] == last_edited)
+
+        # 최상위가 그대로면, 이전에 발견했던 하위 페이지들도 각자 변경됐는지 확인
+        child_changed = False
+        if not top_changed:
+            for child_meta in get_sync_metadata_children(key, conn):
+                child_id = child_meta["page_key"].split("::", 1)[1]
+                child_last_edited = get_page_last_edited_time(client, child_id)
+                if child_last_edited is None or child_last_edited != child_meta["last_notion_edited_time"]:
+                    child_changed = True
+                    break
+
+        if not top_changed and not child_changed:
             logger.info("변경 없음, 스킵: %s (last_edited=%s)", page_name, last_edited)
             summary[key] = {
                 "page_name": page_name,
@@ -394,10 +490,22 @@ def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Documen
             continue
 
         try:
-            docs = collect_notion_page(client, page_id, page_name, url)
+            visited: set = set()
+            docs = collect_notion_page(client, page_id, page_name, url, visited)
             all_docs.extend(docs)
             now = datetime.now(timezone.utc).isoformat()
             upsert_sync_metadata(key, last_edited, now, conn)
+
+            # 이번에 실제로 방문한 하위 페이지 목록으로 교체합니다 (그 사이 추가/삭제된
+            # 하위 페이지가 다음 비교에 정확히 반영되도록 기존 기록은 전부 지우고 새로 씀).
+            delete_sync_metadata_children(key, conn)
+            for sub_id in visited:
+                if sub_id == page_id:
+                    continue
+                sub_last_edited = get_page_last_edited_time(client, sub_id)
+                if sub_last_edited is not None:
+                    upsert_sync_metadata(f"{key}::{sub_id}", sub_last_edited, now, conn)
+
             summary[key] = {
                 "page_name": page_name,
                 "doc_count": len(docs),

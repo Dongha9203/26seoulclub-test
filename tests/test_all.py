@@ -12,6 +12,7 @@
 import json
 import sys
 import tempfile
+import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -186,6 +187,32 @@ class TestSupabaseStore:
         from storage.supabase_store import get_sync_metadata
         meta = get_sync_metadata("nonexistent", pg_conn)
         assert meta is None
+
+    def test_sync_metadata_children_roundtrip(self, pg_conn):
+        # 실제 노션 동기화로 생긴 "main::<page_id>" 같은 진짜 행과 절대 겹치지 않도록
+        # 테스트 전용 부모 키를 사용합니다 (공유 운영 DB라 절대값 비교가 위험합니다).
+        from storage.supabase_store import upsert_sync_metadata, get_sync_metadata_children
+        parent = f"test-parent-{uuid.uuid4()}"
+        upsert_sync_metadata(parent, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", pg_conn)
+        upsert_sync_metadata(f"{parent}::sub-1", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", pg_conn)
+        upsert_sync_metadata(f"{parent}::sub-2", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", pg_conn)
+        upsert_sync_metadata("integrated_system", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", pg_conn)
+
+        children = get_sync_metadata_children(parent, pg_conn)
+        assert {c["page_key"] for c in children} == {f"{parent}::sub-1", f"{parent}::sub-2"}
+
+    def test_delete_sync_metadata_children_only_deletes_matching_prefix(self, pg_conn):
+        from storage.supabase_store import (
+            upsert_sync_metadata, delete_sync_metadata_children, get_sync_metadata, get_sync_metadata_children,
+        )
+        parent = f"test-parent-{uuid.uuid4()}"
+        upsert_sync_metadata(parent, "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", pg_conn)
+        upsert_sync_metadata(f"{parent}::sub-1", "2026-01-01T00:00:00Z", "2026-01-02T00:00:00Z", pg_conn)
+
+        deleted = delete_sync_metadata_children(parent, pg_conn)
+        assert deleted == 1
+        assert get_sync_metadata_children(parent, pg_conn) == []
+        assert get_sync_metadata(parent, pg_conn) is not None  # 최상위 자신은 그대로 남아있어야 함
 
     def test_empty_upsert_many(self, pg_conn):
         from storage.supabase_store import upsert_documents, get_total_count
@@ -442,6 +469,93 @@ class TestNotionCollector:
         docs = collect_notion_page(mock_client, "abc-123", "빈페이지", "https://notion.so/xxx")
         assert docs == []
 
+    def test_expand_blocks_flattens_layout_and_extracts_child_pages(self):
+        """column_list/column/callout은 펼치고, 그 안의 child_page는 따로 모은다."""
+        from collectors.notion_collector import _expand_blocks
+
+        mock_client = MagicMock()
+        children_map = {
+            "cl1": [{"id": "col1", "type": "column", "column": {}, "has_children": True}],
+            "col1": [{"id": "co1", "type": "callout",
+                      "callout": {"rich_text": [{"plain_text": "안내"}]}, "has_children": True}],
+            "co1": [
+                {"id": "cp1", "type": "child_page",
+                 "child_page": {"title": "하위페이지"}, "has_children": True},
+                {"id": "p1", "type": "paragraph",
+                 "paragraph": {"rich_text": [{"plain_text": "본문"}]}, "has_children": False},
+            ],
+        }
+        mock_client.blocks.children.list.side_effect = (
+            lambda block_id, start_cursor=None: {"results": children_map.get(block_id, []), "has_more": False}
+        )
+
+        top_blocks = [{"id": "cl1", "type": "column_list", "column_list": {}, "has_children": True}]
+        expanded, nested_pages = _expand_blocks(mock_client, top_blocks)
+
+        assert nested_pages == [("cp1", "하위페이지")]
+        expanded_ids = [b["id"] for b in expanded]
+        assert "co1" in expanded_ids  # callout 자신은 유지
+        assert "p1" in expanded_ids   # callout 안의 본문도 펼쳐짐
+        assert "cl1" not in expanded_ids and "col1" not in expanded_ids  # 레이아웃 컨테이너는 버림
+
+    def test_expand_blocks_skips_child_database(self):
+        """child_database(자료실)는 건너뛰고 nested_pages에도 포함하지 않는다."""
+        from collectors.notion_collector import _expand_blocks
+
+        mock_client = MagicMock()
+        blocks = [{"id": "db1", "type": "child_database",
+                   "child_database": {"title": "자료실"}, "has_children": False}]
+        expanded, nested_pages = _expand_blocks(mock_client, blocks)
+        assert expanded == []
+        assert nested_pages == []
+
+    def test_collect_notion_page_recurses_into_child_page(self):
+        """callout 안에 숨은 child_page를 발견하면 공개 URL을 조회해 재귀 수집한다."""
+        from collectors.notion_collector import collect_notion_page
+
+        mock_client = MagicMock()
+        top_blocks = [{"id": "co1", "type": "callout",
+                       "callout": {"rich_text": []}, "has_children": True}]
+        callout_children = [{"id": "cp1", "type": "child_page",
+                              "child_page": {"title": "하위페이지"}, "has_children": True}]
+        sub_page_blocks = [{"id": "sp1", "type": "paragraph",
+                             "paragraph": {"rich_text": [{"plain_text": "하위 내용"}]},
+                             "has_children": False}]
+
+        children_map = {"top-1": top_blocks, "co1": callout_children, "cp1": sub_page_blocks}
+        mock_client.blocks.children.list.side_effect = (
+            lambda block_id, start_cursor=None: {"results": children_map.get(block_id, []), "has_more": False}
+        )
+        mock_client.pages.retrieve.return_value = {
+            "url": "https://app.notion.com/p/cp1",
+            "public_url": "https://example.notion.site/cp1",
+        }
+
+        docs = collect_notion_page(mock_client, "top-1", "메인페이지", "https://example.notion.site/top-1")
+
+        sub_docs = [d for d in docs if d.content == "하위 내용"]
+        assert len(sub_docs) == 1
+        assert sub_docs[0].notion_page_url == "https://example.notion.site/cp1"
+        assert sub_docs[0].title == "하위페이지"
+
+    def test_collect_notion_page_skips_unresolvable_child_page(self):
+        """하위 페이지 URL 조회가 실패하면(예: 권한 없음) 건너뛰고 나머지는 계속 수집한다."""
+        from collectors.notion_collector import collect_notion_page
+
+        mock_client = MagicMock()
+        top_blocks = [{"id": "co1", "type": "callout",
+                       "callout": {"rich_text": []}, "has_children": True}]
+        callout_children = [{"id": "cp1", "type": "child_page",
+                              "child_page": {"title": "접근불가 페이지"}, "has_children": True}]
+        children_map = {"top-1": top_blocks, "co1": callout_children}
+        mock_client.blocks.children.list.side_effect = (
+            lambda block_id, start_cursor=None: {"results": children_map.get(block_id, []), "has_more": False}
+        )
+        mock_client.pages.retrieve.return_value = {"url": None, "public_url": None}
+
+        docs = collect_notion_page(mock_client, "top-1", "메인페이지", "https://example.notion.site/top-1")
+        assert docs == []  # 본문 없는 callout + 조회 실패한 하위페이지뿐이므로 빈 결과
+
     def test_sync_notion_pages_skips_placeholder(self):
         """URL이 플레이스홀더이면 건너뜀."""
         from collectors.notion_collector import sync_notion_pages
@@ -451,6 +565,97 @@ class TestNotionCollector:
                 docs, summary = sync_notion_pages(config)
         assert summary["main"]["skipped"] is True
         assert len(docs) == 0
+
+    def test_sync_incremental_skips_when_top_and_known_children_unchanged(self):
+        """최상위 페이지도, 이전에 발견했던 하위 페이지도 수정 시각이 그대로면 건너뛴다."""
+        from collectors.notion_collector import sync_notion_pages_incremental
+        config = {"notion_pages": {"main": "https://notion.so/x"}}
+
+        last_edited_by_id = {"top-1": "2026-01-01T00:00:00Z", "sub-1": "2026-01-01T00:00:00Z"}
+        with patch.dict("os.environ", {"NOTION_API_TOKEN": "test-token"}), \
+             patch("collectors.notion_collector.Client"), \
+             patch("collectors.notion_collector.extract_page_id", return_value="top-1"), \
+             patch("collectors.notion_collector.get_page_last_edited_time",
+                   side_effect=lambda client, pid: last_edited_by_id.get(pid)), \
+             patch("storage.supabase_store.get_sync_metadata",
+                   return_value={"page_key": "main", "last_notion_edited_time": "2026-01-01T00:00:00Z",
+                                  "last_synced_at": "x"}), \
+             patch("storage.supabase_store.get_sync_metadata_children",
+                   return_value=[{"page_key": "main::sub-1", "last_notion_edited_time": "2026-01-01T00:00:00Z",
+                                   "last_synced_at": "x"}]), \
+             patch("collectors.notion_collector.collect_notion_page") as fake_collect:
+            docs, summary = sync_notion_pages_incremental(config)
+
+        fake_collect.assert_not_called()
+        assert summary["main"]["skipped"] is True
+        assert summary["main"]["reason"] == "변경 없음"
+        assert docs == []
+
+    def test_sync_incremental_detects_child_page_only_change(self):
+        """최상위 페이지는 안 바뀌었어도, 하위 페이지 자신의 수정 시각이 바뀌면 재수집한다."""
+        from collectors.notion_collector import sync_notion_pages_incremental
+        config = {"notion_pages": {"main": "https://notion.so/x"}}
+
+        last_edited_by_id = {"top-1": "2026-01-01T00:00:00Z", "sub-1": "2026-02-01T00:00:00Z"}
+
+        def fake_collect_notion_page(client, page_id, page_name, url, visited=None):
+            if visited is not None:
+                visited.add(page_id)
+                visited.add("sub-1")
+            return []
+
+        with patch.dict("os.environ", {"NOTION_API_TOKEN": "test-token"}), \
+             patch("collectors.notion_collector.Client"), \
+             patch("collectors.notion_collector.extract_page_id", return_value="top-1"), \
+             patch("collectors.notion_collector.get_page_last_edited_time",
+                   side_effect=lambda client, pid: last_edited_by_id.get(pid)), \
+             patch("storage.supabase_store.get_sync_metadata",
+                   return_value={"page_key": "main", "last_notion_edited_time": "2026-01-01T00:00:00Z",
+                                  "last_synced_at": "x"}), \
+             patch("storage.supabase_store.get_sync_metadata_children",
+                   return_value=[{"page_key": "main::sub-1", "last_notion_edited_time": "2026-01-01T00:00:00Z",
+                                   "last_synced_at": "x"}]), \
+             patch("collectors.notion_collector.collect_notion_page",
+                   side_effect=fake_collect_notion_page), \
+             patch("storage.supabase_store.upsert_sync_metadata") as fake_upsert, \
+             patch("storage.supabase_store.delete_sync_metadata_children") as fake_delete_children:
+            docs, summary = sync_notion_pages_incremental(config)
+
+        assert summary["main"]["skipped"] is False
+        fake_delete_children.assert_called_once_with("main", None)
+        # 최상위(main)와 하위(main::sub-1) 모두 최신 수정 시각으로 기록되어야 함
+        upserted_keys = {call.args[0] for call in fake_upsert.call_args_list}
+        assert upserted_keys == {"main", "main::sub-1"}
+
+    def test_sync_incremental_recollects_all_when_top_changed(self):
+        """최상위 페이지가 바뀌면 하위 페이지 변경 여부와 무관하게 재수집한다."""
+        from collectors.notion_collector import sync_notion_pages_incremental
+        config = {"notion_pages": {"main": "https://notion.so/x"}}
+
+        last_edited_by_id = {"top-1": "2026-03-01T00:00:00Z"}
+
+        def fake_collect_notion_page(client, page_id, page_name, url, visited=None):
+            if visited is not None:
+                visited.add(page_id)
+            return []
+
+        with patch.dict("os.environ", {"NOTION_API_TOKEN": "test-token"}), \
+             patch("collectors.notion_collector.Client"), \
+             patch("collectors.notion_collector.extract_page_id", return_value="top-1"), \
+             patch("collectors.notion_collector.get_page_last_edited_time",
+                   side_effect=lambda client, pid: last_edited_by_id.get(pid)), \
+             patch("storage.supabase_store.get_sync_metadata",
+                   return_value={"page_key": "main", "last_notion_edited_time": "2026-01-01T00:00:00Z",
+                                  "last_synced_at": "x"}), \
+             patch("storage.supabase_store.get_sync_metadata_children") as fake_get_children, \
+             patch("collectors.notion_collector.collect_notion_page",
+                   side_effect=fake_collect_notion_page), \
+             patch("storage.supabase_store.upsert_sync_metadata"), \
+             patch("storage.supabase_store.delete_sync_metadata_children"):
+            docs, summary = sync_notion_pages_incremental(config)
+
+        assert summary["main"]["skipped"] is False
+        fake_get_children.assert_not_called()  # 최상위가 바뀐 순간 하위 비교는 의미 없으므로 건너뜀
 
 
 # ══════════════════════════════════════════════════════════════

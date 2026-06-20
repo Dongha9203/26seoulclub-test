@@ -3,6 +3,7 @@
 """
 
 import io
+import json
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -806,6 +807,16 @@ class TestAdminApi:
             res = client.post("/kb/notion/refresh", headers=self.auth_header(operator))
         assert res.status_code == 502
 
+    def test_notion_refresh_summary_includes_embedding_count(self, client, operator):
+        fake_result = {"status": "ok", "total_collected": 1, "inserted": 1,
+                        "pages": {"faq": {"page_name": "FAQ", "doc_count": 1, "skipped": False}},
+                        "validation": {}, "embedding": {"embedded": 3, "failed": 1}}
+        with patch("api.sync_notion._perform_sync", return_value=fake_result):
+            res = client.post("/kb/notion/refresh", headers=self.auth_header(operator))
+        summary = res.json()["summary_text"]
+        assert "임베딩 3건 반영" in summary
+        assert "임베딩 실패 1건" in summary
+
     def test_notion_last_sync_no_record(self, client, operator):
         # sync_metadata는 한 번이라도 갱신(수동/자동)이 발생하면 영구히 행이 남는
         # 실제 운영 테이블이라 "갱신 기록이 아예 없음"을 실제 DB로 재현할 수
@@ -842,6 +853,92 @@ class TestAdminApi:
         res = client.get("/kb/manual-source-guide", headers=self.auth_header(operator))
         assert res.status_code == 200
         assert len(res.json()["guide"]) == 5
+
+
+class TestPerformSyncEmbeddingBackfill:
+    """_perform_sync/_perform_incremental_sync가 노션 동기화 직후 누락된 임베딩을
+    자동으로 채우는지 직접(엔드포인트를 거치지 않고) 검증합니다."""
+
+    def _write_config(self, tmp_path):
+        config = {"notion_pages": {"main": "https://notion.so/x"}, "embedding_model": "voyage-4"}
+        (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        return config
+
+    def test_perform_sync_backfills_missing_notion_embeddings(self, tmp_path, monkeypatch):
+        import api.sync_notion as sync_notion_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(sync_notion_module, "_root", tmp_path)
+
+        doc = Document.new(source_type="notion", source_origin="main", title="t", content="c")
+        fake_provider = MagicMock()
+        fake_provider.embed_documents.return_value = [[0.1, 0.2]]
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
+
+        with patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
+             patch("storage.supabase_store.upsert_documents", return_value=1), \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[doc]), \
+             patch("storage.supabase_store.update_embedding") as fake_update:
+            result = sync_notion_module._perform_sync()
+
+        assert result["embedding"] == {"embedded": 1, "failed": 0}
+        fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4")
+
+    def test_perform_sync_embedding_failure_does_not_break_sync(self, tmp_path, monkeypatch):
+        """임베딩 단계가 실패해도(예: VOYAGE_API_KEY 누락) 노션 본문 동기화 자체는 성공해야 함."""
+        import api.sync_notion as sync_notion_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(sync_notion_module, "_root", tmp_path)
+
+        doc = Document.new(source_type="notion", source_origin="main", title="t", content="c")
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
+
+        with patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
+             patch("storage.supabase_store.upsert_documents", return_value=1), \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("embedding_manager.get_embedding_provider",
+                   side_effect=EnvironmentError("VOYAGE_API_KEY 없음")):
+            result = sync_notion_module._perform_sync()
+
+        assert result["status"] == "ok"
+        assert result["inserted"] == 1
+        assert result["embedding"] == {"embedded": 0, "failed": 0}
+
+    def test_perform_incremental_sync_backfills_missing_notion_embeddings(self, tmp_path, monkeypatch):
+        import api.cron.sync_notion as cron_sync_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(cron_sync_module, "_root", tmp_path)
+
+        doc = Document.new(source_type="notion", source_origin="main", title="t", content="c")
+        fake_provider = MagicMock()
+        fake_provider.embed_documents.return_value = [[0.3, 0.4]]
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
+
+        with patch("collectors.notion_collector.sync_notion_pages_incremental",
+                   return_value=([doc], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
+             patch("storage.supabase_store.upsert_documents", return_value=1), \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("storage.supabase_store.delete_old_qa_logs", return_value=0), \
+             patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[doc]), \
+             patch("storage.supabase_store.update_embedding") as fake_update:
+            result = cron_sync_module._perform_incremental_sync()
+
+        assert result["embedding"] == {"embedded": 1, "failed": 0}
+        fake_update.assert_called_once_with(doc.doc_id, [0.3, 0.4], "voyage-4")
 
 
 # ══════════════════════════════════════════════════════════════

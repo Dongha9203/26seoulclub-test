@@ -30,7 +30,10 @@ def _perform_sync() -> dict:
     """노션 3페이지 전체 재수집 로직 (수동/cron 공통)."""
     import json as _json
     from collectors.notion_collector import sync_notion_pages
-    from storage.supabase_store import initialize_db, delete_by_source_origin, upsert_documents
+    from embedding_manager import get_embedding_provider, backfill_embeddings
+    from storage.supabase_store import (
+        initialize_db, delete_by_source_origin, upsert_documents, get_documents_missing_embedding,
+    )
     from utils.validators import validate_notion_block_ids
 
     config_path = _root / "config.json"
@@ -41,20 +44,28 @@ def _perform_sync() -> dict:
 
     docs, summary = sync_notion_pages(config)
 
-    page_name_map = {
-        "main": "메인페이지",
-        "integrated_system": "통합시스템",
-        "faq": "FAQ",
-    }
-
-    for key, info in summary.items():
-        if not info.get("skipped") and info.get("doc_count", 0) > 0:
-            page_name = page_name_map.get(key, key)
-            deleted = delete_by_source_origin(page_name)
-            logger.info("기존 Document 삭제: %s → %d건", page_name, deleted)
+    # 최상위 페이지뿐 아니라, 그 안에서 재귀적으로 발견된 하위 페이지(child_page)도
+    # 각자 고유한 source_origin을 가지므로, 이번에 실제로 수집된 모든 source_origin을
+    # 기준으로 기존 Document를 지워야 매번 갱신할 때마다 하위 페이지가 중복 누적되지 않습니다.
+    for source_origin in {d.source_origin for d in docs}:
+        deleted = delete_by_source_origin(source_origin)
+        logger.info("기존 Document 삭제: %s → %d건", source_origin, deleted)
 
     inserted = upsert_documents(docs)
     validation = validate_notion_block_ids(docs)
+
+    # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 갱신 직후 바로
+    # 검색에 반영되도록, 여기서 임베딩이 없는 노션 문서를 자동으로 백필합니다.
+    model = config.get("embedding_model")
+    embedded, embed_failed = 0, 0
+    try:
+        provider = get_embedding_provider(config)
+        pending = [d for d in get_documents_missing_embedding(model) if d.source_type == "notion"]
+        embedded, embed_failed = backfill_embeddings(pending, provider, model)
+    except Exception:
+        logger.exception("노션 문서 임베딩 백필 중 오류")
+    if embedded or embed_failed:
+        logger.info("노션 문서 임베딩 백필: %d건 성공, %d건 실패", embedded, embed_failed)
 
     return {
         "status": "ok",
@@ -62,6 +73,7 @@ def _perform_sync() -> dict:
         "inserted": inserted,
         "pages": summary,
         "validation": validation,
+        "embedding": {"embedded": embedded, "failed": embed_failed},
     }
 
 

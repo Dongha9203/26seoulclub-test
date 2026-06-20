@@ -226,6 +226,38 @@ def get_sync_metadata(page_key: str, conn=None) -> Optional[Dict]:
     }
 
 
+def get_sync_metadata_children(parent_key: str, conn=None) -> List[Dict]:
+    """parent_key 하위에서 재귀로 발견된 노션 하위 페이지들의 동기화 기록을 반환합니다.
+    page_key를 "{parent_key}::{notion_page_id}" 형태로 저장해 식별합니다."""
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT * FROM sync_metadata WHERE page_key LIKE %s", (f"{parent_key}::%",))
+            rows = cur.fetchall()
+    finally:
+        if owns_conn:
+            c.close()
+    return [
+        {"page_key": r["page_key"], "last_notion_edited_time": r["last_notion_edited_time"],
+         "last_synced_at": r["last_synced_at"]}
+        for r in rows
+    ]
+
+
+def delete_sync_metadata_children(parent_key: str, conn=None) -> int:
+    """parent_key 하위 페이지 동기화 기록을 전부 지웁니다 (재수집 후 최신 목록으로 교체할 때 사용)."""
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute("DELETE FROM sync_metadata WHERE page_key LIKE %s", (f"{parent_key}::%",))
+            deleted = cur.rowcount
+        c.commit()
+        return deleted
+    finally:
+        if owns_conn:
+            c.close()
+
+
 def upsert_sync_metadata(page_key: str, last_edited: str, synced_at: str, conn=None) -> None:
     sql = """
     INSERT INTO sync_metadata (page_key, last_notion_edited_time, last_synced_at)
