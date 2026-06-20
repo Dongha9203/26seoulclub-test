@@ -509,7 +509,10 @@ async function renderThreshold(main) {
   const settings = await api("/settings");
   main.innerHTML = `<h1>신뢰도 threshold 조정</h1>` + cardWithDetail(
     "similarity_threshold", `현재 값: ${settings.similarity_threshold}`,
-    "검색 결과의 결합 점수가 이 값 이상일 때만 '검색 성공'으로 판단합니다. 값을 낮추면 더 많은 질문에 답하려 시도하지만 오답 위험이 커지고, 높이면 반대입니다.",
+    "검색 결과의 결합 점수가 이 값보다 낮으면 Claude에게 \"확신이 낮을 수 있다\"는 참고 신호를 함께 전달합니다. " +
+    "다만 이 값 자체가 답변 여부를 차단하지는 않습니다 — 검색 결과가 있으면 점수와 무관하게 항상 Claude에게 보여주고, " +
+    "실제로 답할 수 있는지는 Claude가 문서 내용을 직접 읽고 판단합니다(코퍼스가 작을 때는 점수만으로 관련성을 " +
+    "정확히 판단하기 어려운 한계가 있어 이렇게 운영합니다).",
     `
     <form id="threshold-form">
       <label>similarity_threshold (0.0 ~ 1.0)</label>

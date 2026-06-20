@@ -644,6 +644,39 @@ class TestChatbotEngine:
         assert response.escalated_to_operation_team is True
         engine._anthropic_client.messages.create.assert_not_called()
 
+    def test_handle_question_low_confidence_with_results_still_calls_claude(self, engine):
+        """검색 결과가 있는데 신뢰도(점수)만 threshold 미달인 경우, 코퍼스 정규화
+        한계 때문에 점수만으로 차단하지 않고 Claude에게 직접 판단을 맡겨야 합니다
+        (점수가 비어있는 경우의 즉시 폴백과는 달라야 함)."""
+        from hybrid_search import SearchResult
+
+        results = [SearchResult(
+            doc_id="d1", title="수당 지급 기준", content="활동 수당은 매월 말일 지급됩니다.",
+            category="미분류", source_type="notion",
+            notion_block_id="12345678-1234-1234-1234-123456789abc",
+            notion_page_url="https://notion.so/abc", vector_score=0.1, bm25_score=0.1,
+            combined_score=0.2,
+        )]
+        engine._search_engine.search.return_value = results
+        engine._search_engine.is_confident.return_value = False
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = "provide_answer"
+        block.input = {
+            "answer": "죄송하지만 관련 내용을 찾지 못했어요.",
+            "sentiment_score": 0.0, "resolution_status": "지식DB공백",
+        }
+        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+
+        response = engine.handle_question("오늘 서울 날씨 어때요?", "session-13")
+
+        engine._anthropic_client.messages.create.assert_called_once()
+        from failure_analyzer import FailureCause
+        assert response.failure_cause == FailureCause.KNOWLEDGE_GAP
+        system_prompt = engine._anthropic_client.messages.create.call_args.kwargs["system"]
+        assert "02-0000-0000" in system_prompt  # low_confidence라 운영팀 연락처가 프롬프트에 포함됨
+
     def test_handle_question_success_path_with_deep_link(self, engine):
         from hybrid_search import SearchResult
         from tone_matrix import Situation

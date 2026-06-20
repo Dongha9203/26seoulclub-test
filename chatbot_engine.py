@@ -3,12 +3,17 @@
 
 처리 흐름:
   1. 욕설/혐오표현 초경량 필터 (사전 매칭, API 호출 없음) — 매칭 시 즉시 에스컬레이션 응답
-  2. 필터 통과 시 → 하이브리드 검색 (내부에서 Voyage AI 임베딩 수행)
-  3. 검색 실패(신뢰도 미달) → 실패원인분석 + 운영팀 폴백
-  4. 검색 성공 → 8상황 분류 (이 시점 sentiment_score는 항상 0.0 고정)
-  5. 톤 지침 생성 → Claude API 1회 호출 ({"answer", "sentiment_score"} 동시 반환)
-  6. 감정점수는 로깅 전용 (실시간 톤 전환에는 사용하지 않음)
-  7. 로깅 (failure_cause + sentiment_score 포함)
+  2. 질문모호성 사전 체크 (의미있는 키워드 없음) — 매칭 시 즉시 운영팀 폴백
+  3. 필터 통과 시 → 하이브리드 검색 (내부에서 Voyage AI 임베딩 수행)
+  4. 검색 결과가 전혀 없는 경우만 즉시 운영팀 폴백. 결과가 있으면 신뢰도
+     점수가 낮아도 Claude까지 보내고, "확신이 낮을 수 있다"는 신호만 함께
+     전달합니다 (코퍼스가 작을 때 신뢰도 점수가 질문 관련성과 무관하게
+     통과되는 실제 발견된 한계 때문에, 점수를 차단 기준으로 쓰지 않음)
+  5. 8상황 분류 (이 시점 sentiment_score는 항상 0.0 고정)
+  6. 톤 지침 생성 → Claude API 1회 호출 ({"answer", "sentiment_score",
+     "resolution_status"} 동시 반환) — 최종 해결 여부는 항상 이 resolution_status로 판단
+  7. 감정점수는 로깅 전용 (실시간 톤 전환에는 사용하지 않음)
+  8. 로깅 (failure_cause + sentiment_score 포함)
 
 주의: 욕설필터는 키워드 매칭만으로 판단되므로 임베딩/검색/Claude 호출보다
 먼저 수행해 비용을 절감합니다 (요구사항 6에 명시된 비용 절감 취지).
@@ -231,13 +236,14 @@ class ChatbotEngine:
 
         # ── step: 하이브리드 검색 ─────────────────────────────────────────
         results = self._search_engine.search(question, self._conn)
-        confident = self._search_engine.is_confident(results)
 
-        if not confident:
-            top_score = results[0].combined_score if results else 0.0
+        if not results:
+            # 검색 결과가 전혀 없는 경우(코퍼스가 비어있는 등)만 Claude 호출 없이
+            # 즉시 운영팀 안내로 처리합니다. 결과가 있는 경우는 신뢰도 점수가
+            # 낮더라도 Claude에게 보내 직접 판단하게 합니다 (아래 참고).
             cause = analyze_failure(FailureAnalysisInput(
                 question=question, keywords=keywords, question_category=category,
-                top_score=top_score, similarity_threshold=self._search_engine.similarity_threshold,
+                top_score=0.0, similarity_threshold=self._search_engine.similarity_threshold,
                 min_keywords_for_clarity=self._min_keywords,
             ))
             answer = (
@@ -249,19 +255,25 @@ class ChatbotEngine:
                 answer=answer, situation=None, response_attitude=None,
                 failure_cause=cause, sentiment_score=None, search_success=False,
                 blocked_by_filter=False, escalated_to_operation_team=True,
-                top_score=top_score, deep_link=None, repeated_count=repeated_count,
+                top_score=0.0, deep_link=None, repeated_count=repeated_count,
                 category=category, keywords=keywords,
             )
             self._write_log({
                 "log_id": log_id, "timestamp": timestamp, "session_id": session_id,
                 "question": question, "keywords": keywords, "question_category": category,
-                "blocked_by_filter": False, "search_success": False, "top_score": top_score,
+                "blocked_by_filter": False, "search_success": False, "top_score": 0.0,
                 "failure_cause": cause.value, "situation": None, "response_attitude": None,
                 "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
                 "matched_doc_ids": [], "deep_link": None,
                 "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
             })
             return response
+
+        # 검색 신뢰도 점수는 코퍼스가 작을 때 질문 관련성과 무관하게 통과되는
+        # 경우가 있어(실제 발견된 한계) 더 이상 차단 기준으로 쓰지 않습니다.
+        # 대신 Claude에게 "확신이 낮을 수 있다"는 참고 신호로만 전달하고,
+        # 최종 해결 여부 판단은 항상 Claude의 resolution_status에 맡깁니다.
+        low_confidence_search = not self._search_engine.is_confident(results)
 
         # ── step: 8상황 분류 (sentiment_score는 항상 0.0 고정 입력) ───────
         situation = self._classifier.classify(SituationClassificationInput(
@@ -299,11 +311,12 @@ class ChatbotEngine:
 
         # ── step: 톤 지침 생성 → Claude API 1회 호출 ─────────────────────
         tone_instruction = self._tone_builder.build_instruction(situation)
-        low_confidence = situation == Situation.INFO_GAP
-        # 정보부재 상황은 Claude가 운영팀 연락을 안내해야 하므로 실제 연락처를
-        # 프롬프트에 그대로 박아 넣어 지어내지 못하게 합니다.
+        low_confidence = low_confidence_search or situation == Situation.INFO_GAP
+        # 정보부재 상황이거나 검색 신뢰도가 낮은 경우, Claude가 운영팀 연락을
+        # 안내할 수 있으므로 실제 연락처를 프롬프트에 그대로 박아 넣어
+        # 지어내지 못하게 합니다.
         operation_team_contact = (
-            _format_operation_team_contact(self._config) if situation == Situation.INFO_GAP else None
+            _format_operation_team_contact(self._config) if low_confidence else None
         )
         system_prompt = build_system_prompt(tone_instruction, results, low_confidence, operation_team_contact)
         answer, sentiment_score, resolution_status = call_claude(
