@@ -413,6 +413,34 @@ def get_score_distribution(conn=None) -> Dict[str, int]:
     return buckets
 
 
+def delete_old_qa_logs(days: int = 365, conn=None) -> int:
+    """보존기간(기본 1년)이 지난 qa_log 행을 삭제합니다 (일일 cron에서 호출).
+
+    일별 건수/원인별 집계 리포트는 같은 qa_log를 그대로 집계하므로, 삭제 이후
+    이 기간보다 오래된 날짜의 통계는 함께 사라집니다 — 의도된 동작입니다.
+    action_status.log_id가 qa_log.log_id를 참조(FK)하므로, qa_log를 지우기
+    전에 같은 log_id의 action_status 행을 먼저 지워야 FK 위반이 나지 않습니다."""
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "DELETE FROM action_status WHERE log_id IN ("
+                "  SELECT log_id FROM qa_log WHERE timestamp < NOW() - make_interval(days => %s)"
+                ")",
+                (days,),
+            )
+            cur.execute(
+                "DELETE FROM qa_log WHERE timestamp < NOW() - make_interval(days => %s)",
+                (days,),
+            )
+            deleted = cur.rowcount
+        c.commit()
+        return deleted
+    finally:
+        if owns_conn:
+            c.close()
+
+
 def get_logs_by_failure_causes(causes: List[str], limit: int = 50, offset: int = 0,
                                 conn=None) -> List[Dict]:
     """failure_cause가 주어진 목록에 속하는 로그를 조회합니다 (불완전답변/미해결답변 화면용).

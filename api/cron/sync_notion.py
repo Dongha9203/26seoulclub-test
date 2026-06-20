@@ -34,11 +34,16 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+_QA_LOG_RETENTION_DAYS = 365
+
+
 def _perform_incremental_sync() -> dict:
     """변경된 노션 페이지만 재수집 (cron 전용 로직)."""
     import json as _json
     from collectors.notion_collector import sync_notion_pages_incremental
-    from storage.supabase_store import initialize_db, delete_by_source_origin, upsert_documents
+    from storage.supabase_store import (
+        initialize_db, delete_by_source_origin, upsert_documents, delete_old_qa_logs,
+    )
     from utils.validators import validate_notion_block_ids
 
     config_path = _root / "config.json"
@@ -64,6 +69,9 @@ def _perform_incremental_sync() -> dict:
     inserted = upsert_documents(docs) if docs else 0
     validation = validate_notion_block_ids(docs) if docs else {}
 
+    qa_log_purged = delete_old_qa_logs(_QA_LOG_RETENTION_DAYS)
+    logger.info("보존기간(%d일) 초과 qa_log 삭제: %d건", _QA_LOG_RETENTION_DAYS, qa_log_purged)
+
     return {
         "status": "ok",
         "mode": "incremental",
@@ -71,6 +79,7 @@ def _perform_incremental_sync() -> dict:
         "inserted": inserted,
         "pages": summary,
         "validation": validation,
+        "qa_log_purged": qa_log_purged,
     }
 
 

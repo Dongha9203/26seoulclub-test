@@ -171,7 +171,8 @@ async function renderQaLogs(main, page = 0) {
   `).join("");
   const hasMore = data.logs.length === limit;
   main.innerHTML = `<h1>질의-답변 연계조회</h1>` + cardWithDetail(
-    "최근 질의-답변 (한 번에 최대 30건)", "사용자 질문과 챗봇 답변을 함께 보여줍니다.",
+    "최근 질의-답변 (한 번에 최대 30건)",
+    "사용자 질문과 챗봇 답변을 함께 보여줍니다. (이 자료는 최고 1년을 보관하고, 이후 자동삭제 됩니다.)",
     "사용자의 질문과 챗봇이 실제로 보낸 답변을 짝지어 확인할 수 있는 화면입니다.",
     (data.logs.length
       ? `<table><thead><tr><th>시각</th><th>질문</th><th>답변</th><th>실패원인</th></tr></thead><tbody>${rows}</tbody></table>`
@@ -287,7 +288,8 @@ async function renderFailureReport(main) {
     ([cause, cnt]) => `<tr><td>${escapeHtml(cause)}</td><td>${cnt}</td></tr>`
   ).join("");
   main.innerHTML = `<h1>원인별 집계 리포트</h1>` + cardWithDetail(
-    "실패 원인별 집계", "",
+    "실패 원인별 집계",
+    "최근 1년간 누적된 건수입니다. (자료가 최고 1년을 보관하고 이후 자동삭제 되어, 1년이 지난 건은 집계에서 빠집니다.)",
     "검색 실패의 원인을 지식DB공백/검색실패/질문모호성/정책밖요청 4가지로 분류해 건수를 보여줍니다.",
     `<table><thead><tr><th>원인</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
   );

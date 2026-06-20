@@ -23,9 +23,9 @@ _TONE_TEST_VALUES = {k: f"테스트-{k}" for k in
                       "channel", "emotional_labor", "persona", "factuality"]}
 
 
-def _make_log_entry(session_id="s1", failure_cause=None, top_score=0.5):
+def _make_log_entry(session_id="s1", failure_cause=None, top_score=0.5, timestamp=None):
     return {
-        "log_id": str(uuid.uuid4()), "timestamp": datetime.now(timezone.utc).isoformat(),
+        "log_id": str(uuid.uuid4()), "timestamp": (timestamp or datetime.now(timezone.utc)).isoformat(),
         "session_id": session_id, "question": "테스트 질문", "keywords": ["테스트"],
         "question_category": "미분류", "blocked_by_filter": False, "search_success": failure_cause is None,
         "top_score": top_score, "failure_cause": failure_cause, "situation": None,
@@ -324,6 +324,37 @@ class TestQaLogAggregation:
         set_status(entry["log_id"], "완료", pg_conn)
         incomplete = get_logs_by_failure_causes(["검색실패", "질문모호성"], limit=200, conn=pg_conn)
         assert entry["log_id"] not in {log["log_id"] for log in incomplete}
+
+    def test_delete_old_qa_logs_removes_only_stale_rows(self, pg_conn):
+        from storage.supabase_store import insert_qa_log, delete_old_qa_logs
+        old_entry = _make_log_entry(timestamp=datetime.now(timezone.utc) - timedelta(days=400))
+        recent_entry = _make_log_entry(timestamp=datetime.now(timezone.utc) - timedelta(days=10))
+        insert_qa_log(old_entry, pg_conn)
+        insert_qa_log(recent_entry, pg_conn)
+
+        deleted = delete_old_qa_logs(365, pg_conn)
+
+        assert deleted >= 1
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT log_id FROM qa_log WHERE log_id = %s", (old_entry["log_id"],))
+            assert cur.fetchone() is None
+            cur.execute("SELECT log_id FROM qa_log WHERE log_id = %s", (recent_entry["log_id"],))
+            assert cur.fetchone() is not None
+
+    def test_delete_old_qa_logs_also_removes_action_status_to_avoid_fk_violation(self, pg_conn):
+        from storage.supabase_store import insert_qa_log, delete_old_qa_logs
+        from storage.action_store import set_status
+        old_entry = _make_log_entry(
+            failure_cause="검색실패", timestamp=datetime.now(timezone.utc) - timedelta(days=400),
+        )
+        insert_qa_log(old_entry, pg_conn)
+        set_status(old_entry["log_id"], "완료", pg_conn)
+
+        delete_old_qa_logs(365, pg_conn)  # FK 위반 없이 통과해야 함
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT log_id FROM action_status WHERE log_id = %s", (old_entry["log_id"],))
+            assert cur.fetchone() is None
 
     def test_get_failure_cause_counts(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_failure_cause_counts
