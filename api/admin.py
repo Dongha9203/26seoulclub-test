@@ -130,45 +130,26 @@ def score_distribution(operator_email: str = Depends(get_current_operator)):
 def incomplete_answers(limit: int = 50, offset: int = 0,
                         operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_logs_by_failure_causes
-    from storage.action_store import get_statuses
-
-    logs = get_logs_by_failure_causes(_INCOMPLETE_CAUSES, limit, offset)
-    statuses = get_statuses([log["log_id"] for log in logs])
-    for log in logs:
-        log["action_status"] = statuses[log["log_id"]]
-    return {"logs": logs}
+    return {"logs": get_logs_by_failure_causes(_INCOMPLETE_CAUSES, limit, offset)}
 
 
 @app.get("/actions/unresolved")
 def unresolved_answers(limit: int = 50, offset: int = 0,
                         operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_logs_by_failure_causes
-    from storage.action_store import get_statuses
-
-    logs = get_logs_by_failure_causes(_UNRESOLVED_CAUSES, limit, offset)
-    statuses = get_statuses([log["log_id"] for log in logs])
-    for log in logs:
-        log["action_status"] = statuses[log["log_id"]]
-    return {"logs": logs}
+    return {"logs": get_logs_by_failure_causes(_UNRESOLVED_CAUSES, limit, offset)}
 
 
-class StatusUpdateRequest(BaseModel):
-    status: str
-
-
-@app.put("/actions/{log_id}/status")
-def update_action_status(log_id: str, req: StatusUpdateRequest,
-                          operator_email: str = Depends(get_current_operator)):
-    from storage.action_store import set_status, VALID_STATUSES
-    if req.status not in VALID_STATUSES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"status는 {', '.join(VALID_STATUSES)} 중 하나여야 합니다.",
-        )
+@app.delete("/actions/{log_id}")
+def resolve_action(log_id: str, operator_email: str = Depends(get_current_operator)):
+    """운영자가 노션/데이터를 직접 수정해 처리를 완료했음을 표시합니다.
+    qa_log 행은 지우지 않고(통계 보존) action_status만 '완료'로 남겨, 이후
+    불완전/미해결 답변 목록 조회에서 제외되도록 합니다."""
+    from storage.action_store import set_status
     try:
-        set_status(log_id, req.status)
+        set_status(log_id, "완료")
     except Exception:
-        logger.exception("조치 상태 변경 중 오류 (log_id=%s)", log_id)
+        logger.exception("조치 완료 처리 중 오류 (log_id=%s)", log_id)
         raise HTTPException(status_code=404, detail="존재하지 않는 log_id이거나 처리 중 오류가 발생했습니다.")
     return {"status": "ok"}
 

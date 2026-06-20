@@ -415,12 +415,20 @@ def get_score_distribution(conn=None) -> Dict[str, int]:
 
 def get_logs_by_failure_causes(causes: List[str], limit: int = 50, offset: int = 0,
                                 conn=None) -> List[Dict]:
-    """failure_cause가 주어진 목록에 속하는 로그를 조회합니다 (불완전답변/미해결답변 화면용)."""
+    """failure_cause가 주어진 목록에 속하는 로그를 조회합니다 (불완전답변/미해결답변 화면용).
+
+    운영자가 노션/데이터를 수정해 처리 완료(action_status='완료')로 표시한 항목은
+    목록에서 제외합니다. qa_log 행 자체는 지우지 않으므로 일별 건수/원인별 집계
+    통계에는 계속 반영됩니다."""
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
             cur.execute(
                 "SELECT * FROM qa_log WHERE failure_cause = ANY(%s) "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM action_status"
+                "  WHERE action_status.log_id = qa_log.log_id AND action_status.status = '완료'"
+                ") "
                 "ORDER BY timestamp DESC LIMIT %s OFFSET %s",
                 (causes, limit, offset),
             )

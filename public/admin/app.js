@@ -99,11 +99,6 @@ function bindAccordions(root) {
   });
 }
 
-function statusBadge(status) {
-  const cls = status === "완료" ? "badge-done" : status === "처리중" ? "badge-in-progress" : "badge-pending";
-  return `<span class="badge ${cls}">${escapeHtml(status)}</span>`;
-}
-
 // ── 라우터 ─────────────────────────────────────────────────────
 
 const routes = {
@@ -238,34 +233,25 @@ async function renderScoreDistribution(main) {
 async function renderActionList(endpoint, title, subtitle, page = 0) {
   const main = document.getElementById("main");
   const limit = 30;
-  const [data, faqUrlData] = await Promise.all([
-    api(`/actions/${endpoint}?limit=${limit}&offset=${page * limit}`),
-    api("/kb/notion-faq-url"),
-  ]);
+  const data = await api(`/actions/${endpoint}?limit=${limit}&offset=${page * limit}`);
 
   const rows = data.logs.map((l) => `
     <tr>
       <td>${escapeHtml(new Date(l.timestamp).toLocaleString("ko-KR"))}</td>
       <td>${escapeHtml(l.question)}</td>
       <td>${escapeHtml(l.failure_cause)}</td>
-      <td>${statusBadge(l.action_status)}</td>
-      <td>
-        <select data-log-id="${l.log_id}" class="status-select">
-          <option value="대기" ${l.action_status === "대기" ? "selected" : ""}>대기</option>
-          <option value="처리중" ${l.action_status === "처리중" ? "selected" : ""}>처리중</option>
-          <option value="완료" ${l.action_status === "완료" ? "selected" : ""}>완료</option>
-        </select>
-      </td>
-      <td><button class="btn btn-secondary add-to-notion" data-question="${escapeHtml(l.question)}">노션에서 추가하기</button></td>
+      <td><button class="btn btn-danger" data-resolve="${l.log_id}">삭제</button></td>
     </tr>
   `).join("");
 
   const hasMore = data.logs.length === limit;
   main.innerHTML = `<h1>${escapeHtml(title)}</h1>` + cardWithDetail(
     title, subtitle,
-    "조치 상태를 대기 → 처리중 → 완료로 직접 바꿀 수 있습니다. \"노션에서 추가하기\"는 질문을 클립보드에 복사하고 노션 FAQ 페이지를 새 탭으로 엽니다 (등록 폼은 따로 없습니다 — 실제 입력은 노션에서 직접 합니다).",
+    "이 목록의 항목들은 운영자가 노션 페이지나 데이터를 직접 찾아 수정해야 해결되는 사항입니다. "
+    + "노션/데이터 수정을 완료했다면 \"삭제\" 버튼을 눌러 이 목록에서 제거해 주세요 "
+    + "(일별 질의/응답 건수, 원인별 집계 리포트 등 통계에는 계속 남습니다 — 이 목록에서만 사라집니다).",
     (data.logs.length
-      ? `<table><thead><tr><th>시각</th><th>질문</th><th>실패원인</th><th>상태</th><th>변경</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<table><thead><tr><th>시각</th><th>질문</th><th>실패원인</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p class="muted">해당 조건에 해당하는 항목이 없습니다.</p>`)
     + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
         <button id="action-list-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
@@ -282,35 +268,14 @@ async function renderActionList(endpoint, title, subtitle, page = 0) {
     renderActionList(endpoint, title, subtitle, page + 1);
   });
 
-  main.querySelectorAll(".status-select").forEach((sel) => {
-    const previousValue = sel.value;
-    sel.addEventListener("change", async () => {
-      sel.disabled = true;
-      try {
-        await api(`/actions/${sel.dataset.logId}/status`, {
-          method: "PUT",
-          body: JSON.stringify({ status: sel.value }),
-        });
-        const badgeCell = sel.closest("td").previousElementSibling;
-        badgeCell.innerHTML = statusBadge(sel.value);
-      } catch (err) {
-        alert("상태 변경 실패: " + err.message);
-        sel.value = previousValue;
-      } finally {
-        sel.disabled = false;
-      }
-    });
-  });
-
-  main.querySelectorAll(".add-to-notion").forEach((btn) => {
+  main.querySelectorAll("[data-resolve]").forEach((btn) => {
     btn.addEventListener("click", async () => {
+      if (!confirm("노션/데이터 수정을 완료해서 이 목록에서 삭제할까요?")) return;
       try {
-        await navigator.clipboard.writeText(btn.dataset.question);
-      } catch (e) { /* 클립보드 권한이 없어도 새 탭은 계속 열어줍니다 */ }
-      if (faqUrlData.url) {
-        window.open(faqUrlData.url, "_blank", "noopener,noreferrer");
-      } else {
-        alert("질문이 클립보드에 복사되었습니다. (노션 FAQ URL이 아직 설정되지 않았습니다)");
+        await api(`/actions/${btn.dataset.resolve}`, { method: "DELETE" });
+        renderActionList(endpoint, title, subtitle, page);
+      } catch (err) {
+        alert("삭제 실패: " + err.message);
       }
     });
   });

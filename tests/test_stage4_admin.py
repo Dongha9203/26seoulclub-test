@@ -314,6 +314,17 @@ class TestQaLogAggregation:
         assert entry_unresolved["log_id"] not in ids
         assert all(log["failure_cause"] in ("검색실패", "질문모호성") for log in incomplete)
 
+    def test_get_logs_by_failure_causes_excludes_resolved(self, pg_conn):
+        # action_status='완료'로 표시된 항목은 목록에서 제외되어야 하지만,
+        # qa_log 행 자체는 지워지지 않아 통계(get_failure_cause_counts 등)에는 남습니다.
+        from storage.supabase_store import insert_qa_log, get_logs_by_failure_causes
+        from storage.action_store import set_status
+        entry = _make_log_entry(failure_cause="검색실패")
+        insert_qa_log(entry, pg_conn)
+        set_status(entry["log_id"], "완료", pg_conn)
+        incomplete = get_logs_by_failure_causes(["검색실패", "질문모호성"], limit=200, conn=pg_conn)
+        assert entry["log_id"] not in {log["log_id"] for log in incomplete}
+
     def test_get_failure_cause_counts(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_failure_cause_counts
         insert_qa_log(_make_log_entry(failure_cause="정책밖요청"), pg_conn)
@@ -531,25 +542,24 @@ class TestAdminApi:
         for log in res.json()["logs"]:
             assert log["failure_cause"] in ("지식DB공백", "정책밖요청")
 
-    def test_update_action_status_success(self, client, operator, pg_conn):
+    def test_resolve_action_success(self, client, operator, pg_conn):
         from storage.supabase_store import insert_qa_log
         entry = _make_log_entry(failure_cause="검색실패")
         insert_qa_log(entry, pg_conn)
-        res = client.put(f"/actions/{entry['log_id']}/status", json={"status": "처리중"},
-                          headers=self.auth_header(operator))
+        res = client.delete(f"/actions/{entry['log_id']}", headers=self.auth_header(operator))
         assert res.status_code == 200
 
-    def test_update_action_status_invalid_value_returns_400(self, client, operator, pg_conn):
+    def test_resolve_action_removes_from_incomplete_list(self, client, operator, pg_conn):
         from storage.supabase_store import insert_qa_log
         entry = _make_log_entry(failure_cause="검색실패")
         insert_qa_log(entry, pg_conn)
-        res = client.put(f"/actions/{entry['log_id']}/status", json={"status": "보류"},
-                          headers=self.auth_header(operator))
-        assert res.status_code == 400
+        client.delete(f"/actions/{entry['log_id']}", headers=self.auth_header(operator))
+        res = client.get("/actions/incomplete", headers=self.auth_header(operator))
+        ids = {log["log_id"] for log in res.json()["logs"]}
+        assert entry["log_id"] not in ids
 
-    def test_update_action_status_nonexistent_log_id_returns_404(self, client, operator):
-        res = client.put("/actions/nonexistent-log-id/status", json={"status": "완료"},
-                          headers=self.auth_header(operator))
+    def test_resolve_action_nonexistent_log_id_returns_404(self, client, operator):
+        res = client.delete("/actions/nonexistent-log-id", headers=self.auth_header(operator))
         assert res.status_code == 404
 
     def test_failure_report_includes_all_four_causes(self, client, operator):
