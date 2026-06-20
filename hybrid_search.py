@@ -94,12 +94,7 @@ class HybridSearchEngine:
         else:
             raw_bm25_scores = [0.0] * len(corpus)
 
-        # 벡터 점수는 min-max 정규화하지 않고 코사인 유사도(0~1 클램프) 원값을 그대로 씁니다.
-        # min-max 정규화는 코퍼스 내 1위 문서를 질문 관련성과 무관하게 항상 1.0으로
-        # 만들어버려서, vector 가중치(0.6)만으로도 무조건 similarity_threshold(0.55)를
-        # 넘기게 되는 버그가 있었습니다 (질문이 지식베이스와 완전히 무관해도 항상
-        # confident=True로 판정됨). BM25는 가중치(0.4)가 threshold보다 낮아 단독으로는
-        # threshold를 못 넘기므로 코퍼스 상대 정규화를 유지해도 안전합니다.
+        vector_scores_norm = _min_max_normalize(vector_scores)
         bm25_scores_norm = _min_max_normalize(raw_bm25_scores)
 
         w_vec = self._weights.get("vector", 0.6)
@@ -107,7 +102,7 @@ class HybridSearchEngine:
 
         results = []
         for i, (doc, _) in enumerate(corpus):
-            combined = w_vec * vector_scores[i] + w_bm25 * bm25_scores_norm[i]
+            combined = w_vec * vector_scores_norm[i] + w_bm25 * bm25_scores_norm[i]
             results.append(SearchResult(
                 doc_id=doc.doc_id,
                 title=doc.title,
