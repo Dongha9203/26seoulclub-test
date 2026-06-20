@@ -369,7 +369,9 @@ async function renderKb(main) {
       "전체 문서 목록", "노션 소스는 조회 전용이며 삭제 버튼이 비활성화됩니다.",
       `수동 업로드 가능한 소스 타입별 처리 방식:
        <table><thead><tr><th>소스 타입</th><th>처리 방식</th></tr></thead><tbody>${guideRows}</tbody></table>
-       <p style="margin-top:10px;">파일 업로드나 구글 스프레드시트로 추가한 문서는 목록에 바로 보이지만, "갱신" 버튼을 눌러 확인해줘야 챗봇이 실제로 그 내용을 찾아 답변할 수 있습니다.</p>`,
+       <p style="margin-top:10px;">파일 업로드나 구글 스프레드시트로 추가한 문서는 목록에 바로 보이지만, "갱신" 버튼을 눌러 확인해줘야 챗봇이 실제로 그 내용을 찾아 답변할 수 있습니다.</p>
+       <p style="margin-top:10px;">검색 정확도를 높이기 위해, 소제목 스타일이 없는 긴 문서(800자 이상)는 파일 1개를 업로드해도 "(파트 1)", "(파트 2)"처럼 여러 건으로 자동 분할되어 등록됩니다. 같은 출처(파일명)로 여러 줄이 보이는 건 오류가 아니라 정상 동작입니다.</p>
+       <p style="margin-top:10px;">구글 스프레드시트는 시트의 행(row) 1개가 문서 1개로 등록됩니다. 시트에 10개 행이 있으면 문서도 10건 등록되는 게 정상이며, 각 문서의 제목은 시트의 "질문/제목" 컬럼 값을 그대로 사용합니다.</p>`,
       `
       <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:16px;">
         <div>
@@ -384,6 +386,11 @@ async function renderKb(main) {
           <button id="kb-sheet-upload-btn" class="btn" style="margin-top:8px;">가져오기</button>
           <div id="kb-sheet-result"></div>
         </div>
+      </div>
+      <div style="margin-bottom:16px; display:flex; align-items:center; gap:10px;">
+        <button id="kb-embed-all-btn" class="btn btn-secondary">전체 갱신</button>
+        <span class="muted">업로드한 문서 중 아직 반영되지 않은 것을 한 번에 처리합니다 (행이 많은 시트 등록 후 추천).</span>
+        <span id="kb-embed-all-result"></span>
       </div>
       ${docs.documents.length
         ? `<table><thead><tr><th>제목</th><th>유형</th><th>출처</th><th>카테고리</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
@@ -438,6 +445,28 @@ async function renderKb(main) {
     });
   });
 
+  document.getElementById("kb-embed-all-btn").addEventListener("click", async (e) => {
+    const btn = e.target;
+    const resultEl = document.getElementById("kb-embed-all-result");
+    if (!confirm("업로드한 문서 중 반영되지 않은 것을 모두 갱신합니다. 문서가 많으면 시간이 걸릴 수 있습니다. 계속할까요?")) return;
+    btn.disabled = true;
+    btn.innerHTML = `<span class="spinner"></span> 갱신 중...`;
+    resultEl.textContent = "";
+    try {
+      const result = await api("/kb/documents/embed-all", { method: "POST" });
+      const failNote = result.failed ? ` (실패 ${result.failed}건)` : "";
+      resultEl.innerHTML = result.embedded
+        ? `<span class="success-text">${result.embedded}건 반영 완료${failNote}</span>`
+        : `<span class="muted">반영할 문서가 없습니다.</span>`;
+      renderKb(main);
+    } catch (err) {
+      resultEl.innerHTML = `<span class="error-text">일괄 갱신 실패: ${escapeHtml(err.message)}</span>`;
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "전체 갱신";
+    }
+  });
+
   document.getElementById("kb-file-upload-btn").addEventListener("click", async () => {
     const input = document.getElementById("kb-file-input");
     const resultEl = document.getElementById("kb-file-result");
@@ -450,7 +479,10 @@ async function renderKb(main) {
     resultEl.textContent = "업로드 중...";
     try {
       const result = await apiUpload("/kb/upload", fd);
-      resultEl.innerHTML = `<span class="success-text">${result.inserted}건 저장 완료</span>`;
+      const splitNote = result.inserted > 1
+        ? ` (검색 정확도를 위해 긴 문서가 ${result.inserted}건으로 자동 분할되었습니다)`
+        : "";
+      resultEl.innerHTML = `<span class="success-text">${result.inserted}건 저장 완료${splitNote}</span>`;
       renderKb(main);
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
@@ -465,7 +497,8 @@ async function renderKb(main) {
       const result = await api("/kb/google-sheet", {
         method: "POST", body: JSON.stringify({ url: input.value }),
       });
-      resultEl.innerHTML = `<span class="success-text">${result.inserted}건 저장 완료</span>`;
+      resultEl.innerHTML =
+        `<span class="success-text">${result.inserted}건 저장 완료 (시트의 행 1개 = 문서 1개로 등록됩니다)</span>`;
       renderKb(main);
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;

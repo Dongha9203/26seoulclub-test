@@ -714,6 +714,55 @@ class TestAdminApi:
         assert res.status_code == 200
         assert res.json()["inserted"] >= 1
 
+    def test_embed_all_no_pending_documents_returns_zero(self, client, operator):
+        with patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
+        assert res.status_code == 200
+        assert res.json() == {"status": "ok", "embedded": 0, "failed": 0}
+
+    def test_embed_all_skips_notion_documents(self, client, operator):
+        from models.document import Document
+        notion_doc = Document.new(source_type="notion", source_origin="FAQ", title="T",
+                                   content="C", notion_block_id="abc", is_editable=False)
+        fake_provider = MagicMock()
+        with patch("storage.supabase_store.get_documents_missing_embedding",
+                   return_value=[notion_doc]), \
+             patch("embedding_manager.get_embedding_provider", return_value=fake_provider):
+            res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
+        assert res.status_code == 200
+        assert res.json() == {"status": "ok", "embedded": 0, "failed": 0}
+        fake_provider.embed_documents.assert_not_called()
+
+    def test_embed_all_embeds_pending_editable_documents(self, client, operator):
+        from models.document import Document
+        doc = Document.new(source_type="google_sheet", source_origin="시트", title="질문1",
+                            content="답변1")
+        fake_provider = MagicMock()
+        fake_provider.embed_documents.return_value = [[0.1, 0.2]]
+        with patch("storage.supabase_store.get_documents_missing_embedding",
+                   return_value=[doc]), \
+             patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
+             patch("storage.supabase_store.update_embedding") as fake_update:
+            res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
+        assert res.status_code == 200
+        assert res.json() == {"status": "ok", "embedded": 1, "failed": 0}
+        fake_update.assert_called_once()
+
+    def test_embed_all_batch_failure_counts_as_failed_without_crashing(self, client, operator):
+        from models.document import Document
+        doc = Document.new(source_type="google_sheet", source_origin="시트", title="질문1",
+                            content="답변1")
+        fake_provider = MagicMock()
+        fake_provider.embed_documents.side_effect = ConnectionError("voyage api down")
+        with patch("storage.supabase_store.get_documents_missing_embedding",
+                   return_value=[doc]), \
+             patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
+             patch("storage.supabase_store.update_embedding") as fake_update:
+            res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
+        assert res.status_code == 200
+        assert res.json() == {"status": "ok", "embedded": 0, "failed": 1}
+        fake_update.assert_not_called()
+
     def test_google_sheet_empty_url_returns_400(self, client, operator):
         res = client.post("/kb/google-sheet", headers=self.auth_header(operator), json={"url": ""})
         assert res.status_code == 400
