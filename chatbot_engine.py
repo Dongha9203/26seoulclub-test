@@ -11,7 +11,9 @@
      통과되는 실제 발견된 한계 때문에, 점수를 차단 기준으로 쓰지 않음)
   5. 8상황 분류 (이 시점 sentiment_score는 항상 0.0 고정)
   6. 톤 지침 생성 → Claude API 1회 호출 ({"answer", "sentiment_score",
-     "resolution_status"} 동시 반환) — 최종 해결 여부는 항상 이 resolution_status로 판단
+     "resolution_status"} 동시 반환) — 최종 해결 여부는 항상 이 resolution_status로 판단.
+     이 호출 자체가 실패하면(레이트리밋/네트워크 오류 등) failure_cause="API오류"로
+     남기고 운영팀 폴백 응답을 반환합니다 (검색/분류 결과와 무관한 별개 원인).
   7. 감정점수는 로깅 전용 (실시간 톤 전환에는 사용하지 않음)
   8. 로깅 (failure_cause + sentiment_score 포함)
 
@@ -319,9 +321,38 @@ class ChatbotEngine:
             _format_operation_team_contact(self._config) if low_confidence else None
         )
         system_prompt = build_system_prompt(tone_instruction, results, low_confidence, operation_team_contact)
-        answer, sentiment_score, resolution_status = call_claude(
-            self._anthropic_client, self._llm_model, system_prompt, question
-        )
+        try:
+            answer, sentiment_score, resolution_status = call_claude(
+                self._anthropic_client, self._llm_model, system_prompt, question
+            )
+        except Exception:
+            # Claude API 자체가 실패한 경우(레이트리밋/네트워크 오류 등)는 검색/분류와는
+            # 무관한 별개 원인이므로, 운영팀 폴백으로 응답하면서도 failure_cause를 남겨
+            # 대시보드에서 보이게 합니다 (이전에는 예외가 그대로 올라가 로그가 전혀
+            # 남지 않고 사용자에게도 일반 500 오류만 갔습니다).
+            logger.exception("Claude API 호출 실패")
+            answer = (
+                "죄송합니다, 일시적으로 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주시거나, "
+                "급하신 경우 아래 운영팀으로 문의해 주세요.\n\n" + _format_operation_team_contact(self._config)
+            )
+            response = ChatbotResponse(
+                answer=answer, situation=None, response_attitude=None,
+                failure_cause=FailureCause.API_ERROR, sentiment_score=None, search_success=False,
+                blocked_by_filter=False, escalated_to_operation_team=True,
+                top_score=results[0].combined_score, deep_link=None, repeated_count=repeated_count,
+                category=category, keywords=keywords,
+            )
+            self._write_log({
+                "log_id": log_id, "timestamp": timestamp, "session_id": session_id,
+                "question": question, "keywords": keywords, "question_category": category,
+                "blocked_by_filter": False, "search_success": False,
+                "top_score": results[0].combined_score, "failure_cause": FailureCause.API_ERROR.value,
+                "situation": None, "response_attitude": None,
+                "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
+                "matched_doc_ids": [], "deep_link": None,
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+            })
+            return response
 
         matched_doc_ids = [r.doc_id for r in results]
 

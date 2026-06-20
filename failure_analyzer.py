@@ -3,6 +3,9 @@
 
 검색이 신뢰도 threshold를 통과하지 못했을 때(chatbot_engine.py step4)만 호출됩니다.
 4가지 원인: 지식DB공백 / 검색실패 / 질문모호성 / 정책밖요청
+
+API오류는 이 분석 로직과 무관하게, chatbot_engine.py가 Claude API 호출 자체가
+실패했을 때(레이트리밋/네트워크 오류 등) 직접 지정하는 값입니다.
 """
 
 from dataclasses import dataclass
@@ -15,6 +18,7 @@ class FailureCause(str, Enum):
     SEARCH_FAILURE = "검색실패"
     QUESTION_AMBIGUITY = "질문모호성"
     OUT_OF_POLICY = "정책밖요청"
+    API_ERROR = "API오류"
 
 
 @dataclass

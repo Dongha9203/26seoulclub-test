@@ -585,11 +585,24 @@ class TestAdminApi:
         res = client.delete("/actions/nonexistent-log-id", headers=self.auth_header(operator))
         assert res.status_code == 404
 
-    def test_failure_report_includes_all_four_causes(self, client, operator):
-        res = client.get("/actions/failure-report", headers=self.auth_header(operator))
+    def test_failure_report_passes_through_counts(self, client, operator):
+        # 실제 운영 DB에 어떤 원인이 몇 건씩 쌓여있는지는 시점마다 달라지므로
+        # (공유 DB), 절대값을 검증하지 않고 엔드포인트가 집계 함수의 결과를
+        # 그대로 전달하는지만 확인합니다.
+        fake_counts = {"지식DB공백": 1, "검색실패": 2, "질문모호성": 3,
+                       "정책밖요청": 4, "API오류": 5}
+        with patch("storage.supabase_store.get_failure_cause_counts", return_value=fake_counts):
+            res = client.get("/actions/failure-report", headers=self.auth_header(operator))
         assert res.status_code == 200
-        counts = res.json()["counts"]
-        assert set(counts.keys()) == {"지식DB공백", "검색실패", "질문모호성", "정책밖요청"}
+        assert res.json()["counts"] == fake_counts
+
+    def test_failure_report_defaults_missing_causes_to_zero(self, client, operator):
+        with patch("storage.supabase_store.get_failure_cause_counts", return_value={"정책밖요청": 3}):
+            res = client.get("/actions/failure-report", headers=self.auth_header(operator))
+        assert res.status_code == 200
+        assert res.json()["counts"] == {
+            "지식DB공백": 0, "검색실패": 0, "질문모호성": 0, "정책밖요청": 3, "API오류": 0,
+        }
 
     # ── 운영설정 ────────────────────────────────────────────────
 

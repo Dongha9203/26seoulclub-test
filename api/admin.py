@@ -154,7 +154,8 @@ def resolve_action(log_id: str, operator_email: str = Depends(get_current_operat
 def failure_report(operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_failure_cause_counts
     counts = get_failure_cause_counts()
-    full = {cause: counts.get(cause, 0) for cause in ["지식DB공백", "검색실패", "질문모호성", "정책밖요청"]}
+    full = {cause: counts.get(cause, 0)
+            for cause in ["지식DB공백", "검색실패", "질문모호성", "정책밖요청", "API오류"]}
     return {"counts": full}
 
 

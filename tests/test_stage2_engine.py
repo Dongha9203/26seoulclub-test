@@ -765,6 +765,34 @@ class TestChatbotEngine:
         system_prompt = engine._anthropic_client.messages.create.call_args.kwargs["system"]
         assert "02-0000-0000" in system_prompt  # low_confidence라 운영팀 연락처가 프롬프트에 포함됨
 
+    def test_handle_question_claude_api_failure_escalates_and_logs(self, engine, pg_conn):
+        """Claude API 호출 자체가 실패(레이트리밋/네트워크 오류 등)하면 일반 예외로
+        새지 않고 운영팀 폴백으로 응답해야 하며, 대시보드에서 보이도록 failure_cause를
+        남겨야 합니다 (이전에는 예외가 그대로 올라가 qa_log에 아무 기록도 안 남았음)."""
+        from hybrid_search import SearchResult
+        from failure_analyzer import FailureCause
+
+        results = [SearchResult(
+            doc_id="d1", title="동아리 가입 안내", content="가입 절차는 다음과 같습니다.",
+            category="미분류", source_type="docx", notion_block_id=None, notion_page_url=None,
+            vector_score=0.9, bm25_score=0.9, combined_score=0.9,
+        )]
+        engine._search_engine.search.return_value = results
+        engine._search_engine.is_confident.return_value = True
+        engine._anthropic_client.messages.create.side_effect = ConnectionError("anthropic api down")
+
+        response = engine.handle_question("동아리 가입 어떻게 하나요?", "session-api-fail")
+
+        assert response.failure_cause == FailureCause.API_ERROR
+        assert response.search_success is False
+        assert response.escalated_to_operation_team is True
+        assert "02-0000-0000" in response.answer
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT failure_cause FROM qa_log WHERE session_id = %s", ("session-api-fail",))
+            row = cur.fetchone()
+        assert row["failure_cause"] == "API오류"
+
     def test_handle_question_success_path_with_deep_link(self, engine):
         from hybrid_search import SearchResult
         from tone_matrix import Situation
@@ -933,16 +961,20 @@ class TestChatbotEngine:
 
         assert response2.repeated_count >= 1
 
-    def test_handle_question_external_llm_failure_propagates(self, engine):
+    def test_handle_question_external_llm_failure_escalates_instead_of_raising(self, engine):
+        """Claude API 호출 실패는 더 이상 그대로 전파되지 않고 운영팀 폴백으로
+        흡수됩니다 (test_handle_question_claude_api_failure_escalates_and_logs 참고)."""
         from hybrid_search import SearchResult
+        from failure_analyzer import FailureCause
         results = [SearchResult("d1", "t", "c", "수당 지급 기준 안내", "docx", None, None,
                                  0.8, 0.8, 0.8)]
         engine._search_engine.search.return_value = results
         engine._search_engine.is_confident.return_value = True
         engine._anthropic_client.messages.create.side_effect = ConnectionError("api down")
 
-        with pytest.raises(ConnectionError):
-            engine.handle_question("수당 지급 기준이 뭐예요?", "session-6")
+        response = engine.handle_question("수당 지급 기준이 뭐예요?", "session-6")
+
+        assert response.failure_cause == FailureCause.API_ERROR
 
     def test_count_repeated_no_log_entries_returns_zero(self, engine):
         assert engine._count_repeated("session-x", ["수당"]) == 0
