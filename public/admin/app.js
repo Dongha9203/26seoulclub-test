@@ -267,7 +267,13 @@ async function renderFailureReport(main) {
   main.innerHTML = `<h1>원인별 집계 리포트</h1>` + cardWithDetail(
     "실패 원인별 집계",
     "최근 1년간 누적된 건수입니다. (자료가 최고 1년을 보관하고 이후 자동삭제 되어, 1년이 지난 건은 집계에서 빠집니다.)",
-    "검색 실패의 원인을 지식DB공백/검색실패/질문모호성/정책밖요청 4가지로 분류해 건수를 보여줍니다.",
+    "검색 실패의 원인을 4가지로 분류해 건수를 보여줍니다." +
+    `<ul style="margin:8px 0 0; padding-left:18px;">
+      <li style="margin-bottom:6px;"><strong>지식DB공백</strong> — 동아리ON 운영과 관련은 있어 보이는 질문인데, 지식 베이스(Knowledge Base)에 그 내용을 다루는 문서가 아예 없어서 챗봇이 직접 답하지 못하고 운영팀 연락처를 안내한 경우입니다. 해당 내용을 지식 베이스에 새로 등록하면 다음부터는 답할 수 있습니다.</li>
+      <li style="margin-bottom:6px;"><strong>검색실패</strong> — 동아리ON 운영과 명백히 관련된 질문인데, 지식 베이스에 관련 문서는 있지만 그 안에서 구체적인 답을 찾지 못해 운영팀 연락처를 안내한 경우입니다. 기존 문서 내용을 더 구체적으로 보강하면 도움이 됩니다.</li>
+      <li style="margin-bottom:6px;"><strong>질문모호성</strong> — 질문에 무엇을 묻는지 알 수 있는 핵심 단어가 거의 없어(예: "이거 뭐예요?"처럼 대상이 빠진 질문) 챗봇이 바로 운영팀 연락처를 안내한 경우입니다. 사용자가 질문을 좀 더 구체적으로 다시 입력하면 해결되는 경우가 많습니다.</li>
+      <li><strong>정책밖요청</strong> — 날씨, 요리, 일반 상식, 다른 서비스 문의처럼 동아리ON 운영과 전혀 무관한 질문이라 챗봇이 답변 대상이 아니라고 안내한 경우입니다. 별도 조치가 필요 없는 정상적인 안내입니다.</li>
+    </ul>`,
     `<table><thead><tr><th>원인</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
   );
   bindAccordions(main);
