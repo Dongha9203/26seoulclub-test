@@ -450,7 +450,7 @@ async function renderKb(main) {
     const resultEl = document.getElementById("kb-embed-all-result");
     if (!confirm("업로드한 문서 중 반영되지 않은 것을 모두 갱신합니다. 문서가 많으면 시간이 걸릴 수 있습니다. 계속할까요?")) return;
     btn.disabled = true;
-    btn.innerHTML = `<span class="spinner"></span> 갱신 중...`;
+    btn.innerHTML = `<span class="spinner"></span> 갱신 중입니다... (문서가 많으면 시간이 걸릴 수 있습니다)`;
     resultEl.textContent = "";
     try {
       const result = await api("/kb/documents/embed-all", { method: "POST" });
