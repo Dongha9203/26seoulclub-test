@@ -54,6 +54,13 @@ def _perform_sync() -> dict:
     inserted = upsert_documents(docs)
     validation = validate_notion_block_ids(docs)
 
+    # summary(=pages)는 최상위 페이지 키 기준이라 그 안에 재귀로 묶인 하위 페이지
+    # 문서 수가 전부 합산되어 보입니다. 운영자에게는 실제로 어떤 출처(하위 페이지
+    # 포함)가 몇 건씩 갱신됐는지 보여줘야 하므로 source_origin별로 따로 집계합니다.
+    sources: dict = {}
+    for d in docs:
+        sources[d.source_origin] = sources.get(d.source_origin, 0) + 1
+
     # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 갱신 직후 바로
     # 검색에 반영되도록, 여기서 임베딩이 없는 노션 문서를 자동으로 백필합니다.
     model = config.get("embedding_model")
@@ -72,6 +79,7 @@ def _perform_sync() -> dict:
         "total_collected": len(docs),
         "inserted": inserted,
         "pages": summary,
+        "sources": sources,
         "validation": validation,
         "embedding": {"embedded": embedded, "failed": embed_failed},
     }

@@ -65,6 +65,10 @@ def _perform_incremental_sync() -> dict:
     inserted = upsert_documents(docs) if docs else 0
     validation = validate_notion_block_ids(docs) if docs else {}
 
+    sources: dict = {}
+    for d in docs:
+        sources[d.source_origin] = sources.get(d.source_origin, 0) + 1
+
     # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 변경분이 바로
     # 검색에 반영되도록, 여기서 임베딩이 없는 노션 문서를 자동으로 백필합니다.
     model = config.get("embedding_model")
@@ -87,6 +91,7 @@ def _perform_incremental_sync() -> dict:
         "total_collected": len(docs),
         "inserted": inserted,
         "pages": summary,
+        "sources": sources,
         "validation": validation,
         "qa_log_purged": qa_log_purged,
         "embedding": {"embedded": embedded, "failed": embed_failed},

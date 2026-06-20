@@ -452,13 +452,16 @@ def refresh_notion(operator_email: str = Depends(get_current_operator)):
     now = datetime.now(timezone.utc).isoformat()
     upsert_sync_metadata(_MANUAL_SYNC_KEY, "", now)
 
-    summary_parts = []
+    # "pages"는 등록된 최상위 페이지 키 기준이라, 그 안에서 재귀로 발견된 하위
+    # 페이지 문서 수가 전부 하나로 합산되어 보입니다(예: "메인페이지 12건 변경"이
+    # 실제로는 메인페이지 1건 + 하위 페이지 5곳의 11건을 합친 숫자). 운영자가
+    # 실제로 어느 출처가 갱신됐는지 알 수 있도록 "sources"(출처별 건수)로 표시합니다.
+    summary_parts = [f"{name} {count}건 변경" for name, count in result.get("sources", {}).items()]
     for info in result.get("pages", {}).values():
-        name = info.get("page_name", "알수없음")
-        if info.get("skipped"):
-            summary_parts.append(f"{name} 건너뜀({info.get('reason', '')})")
-        else:
-            summary_parts.append(f"{name} {info.get('doc_count', 0)}건 변경")
+        # URL이 설정되지 않은 페이지(예: 미사용 FAQ)는 매번 똑같이 "건너뜀"으로
+        # 떠서 운영자에게 의미 있는 정보가 아니므로 메시지에서 제외합니다.
+        if info.get("skipped") and info.get("reason") != "URL 미설정":
+            summary_parts.append(f"{info.get('page_name', '알수없음')} 건너뜀({info.get('reason', '')})")
     summary_text = ", ".join(summary_parts) if summary_parts else "변경 없음"
 
     embedding = result.get("embedding") or {}

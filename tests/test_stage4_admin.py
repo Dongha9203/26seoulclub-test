@@ -791,7 +791,7 @@ class TestAdminApi:
     def test_notion_refresh_success(self, client, operator, pg_conn):
         fake_result = {"status": "ok", "total_collected": 1, "inserted": 1,
                         "pages": {"faq": {"page_name": "FAQ", "doc_count": 1, "skipped": False}},
-                        "validation": {}}
+                        "sources": {"FAQ": 1}, "validation": {}}
         with patch("api.sync_notion._perform_sync", return_value=fake_result):
             res = client.post("/kb/notion/refresh", headers=self.auth_header(operator))
         assert res.status_code == 200
@@ -810,12 +810,46 @@ class TestAdminApi:
     def test_notion_refresh_summary_includes_embedding_count(self, client, operator):
         fake_result = {"status": "ok", "total_collected": 1, "inserted": 1,
                         "pages": {"faq": {"page_name": "FAQ", "doc_count": 1, "skipped": False}},
-                        "validation": {}, "embedding": {"embedded": 3, "failed": 1}}
+                        "sources": {"FAQ": 1}, "validation": {}, "embedding": {"embedded": 3, "failed": 1}}
         with patch("api.sync_notion._perform_sync", return_value=fake_result):
             res = client.post("/kb/notion/refresh", headers=self.auth_header(operator))
         summary = res.json()["summary_text"]
         assert "임베딩 3건 반영" in summary
         assert "임베딩 실패 1건" in summary
+
+    def test_notion_refresh_summary_breaks_down_by_actual_source(self, client, operator):
+        """pages는 최상위 페이지 키 기준으로 하위 페이지 건수까지 합산돼 있어서,
+        운영자에게는 실제 출처(하위 페이지 포함)별 건수를 따로 보여줘야 한다."""
+        fake_result = {
+            "status": "ok", "total_collected": 12, "inserted": 12,
+            "pages": {"main": {"page_name": "메인페이지", "doc_count": 12, "skipped": False},
+                       "faq": {"page_name": "FAQ", "skipped": True, "reason": "URL 미설정"}},
+            "sources": {"메인페이지": 1, "활동기관 연계": 1, "참여형 프로그램 안내": 5,
+                         "국제정원박람회 리더그룹 및 추가모집": 5},
+            "validation": {},
+        }
+        with patch("api.sync_notion._perform_sync", return_value=fake_result):
+            res = client.post("/kb/notion/refresh", headers=self.auth_header(operator))
+        summary = res.json()["summary_text"]
+        assert "메인페이지 1건 변경" in summary
+        assert "활동기관 연계 1건 변경" in summary
+        assert "참여형 프로그램 안내 5건 변경" in summary
+        assert "국제정원박람회 리더그룹 및 추가모집 5건 변경" in summary
+        # URL 미설정(미사용) 페이지는 매번 똑같이 떠서 의미 없는 노이즈이므로 표시하지 않음
+        assert "FAQ" not in summary
+        assert "메인페이지 12건 변경" not in summary
+
+    def test_notion_refresh_summary_shows_real_skip_reasons_other_than_unconfigured(self, client, operator):
+        """URL 미설정이 아닌 실제 실패(예: 노션 조회 오류)는 계속 보여줘야 한다."""
+        fake_result = {
+            "status": "ok", "total_collected": 0, "inserted": 0,
+            "pages": {"main": {"page_name": "메인페이지", "skipped": True, "reason": "조회 실패: 권한 없음"}},
+            "sources": {}, "validation": {},
+        }
+        with patch("api.sync_notion._perform_sync", return_value=fake_result):
+            res = client.post("/kb/notion/refresh", headers=self.auth_header(operator))
+        summary = res.json()["summary_text"]
+        assert "메인페이지 건너뜀(조회 실패: 권한 없음)" in summary
 
     def test_notion_last_sync_no_record(self, client, operator):
         # sync_metadata는 한 번이라도 갱신(수동/자동)이 발생하면 영구히 행이 남는
@@ -888,6 +922,33 @@ class TestPerformSyncEmbeddingBackfill:
 
         assert result["embedding"] == {"embedded": 1, "failed": 0}
         fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4")
+
+    def test_perform_sync_reports_doc_counts_per_actual_source(self, tmp_path, monkeypatch):
+        """pages는 최상위 키 기준 합산이라, 실제 출처(하위 페이지 포함)별 건수는
+        별도 sources 필드로 노출해야 summary_text가 정확한 분류를 보여줄 수 있다."""
+        import api.sync_notion as sync_notion_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(sync_notion_module, "_root", tmp_path)
+
+        docs = [
+            Document.new(source_type="notion", source_origin="메인페이지", title="t", content="c"),
+            Document.new(source_type="notion", source_origin="활동기관 연계", title="t", content="c"),
+            Document.new(source_type="notion", source_origin="활동기관 연계", title="t2", content="c2"),
+        ]
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 3, "skipped": False}}
+
+        with patch("collectors.notion_collector.sync_notion_pages", return_value=(docs, fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
+             patch("storage.supabase_store.upsert_documents", return_value=3), \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            result = sync_notion_module._perform_sync()
+
+        assert result["sources"] == {"메인페이지": 1, "활동기관 연계": 2}
 
     def test_perform_sync_embedding_failure_does_not_break_sync(self, tmp_path, monkeypatch):
         """임베딩 단계가 실패해도(예: VOYAGE_API_KEY 누락) 노션 본문 동기화 자체는 성공해야 함."""
