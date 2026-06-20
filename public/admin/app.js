@@ -467,7 +467,8 @@ async function renderKb(main) {
     }
   });
 
-  document.getElementById("kb-file-upload-btn").addEventListener("click", async () => {
+  document.getElementById("kb-file-upload-btn").addEventListener("click", async (e) => {
+    const btn = e.target;
     const input = document.getElementById("kb-file-input");
     const resultEl = document.getElementById("kb-file-result");
     if (!input.files.length) {
@@ -476,7 +477,8 @@ async function renderKb(main) {
     }
     const fd = new FormData();
     fd.append("file", input.files[0]);
-    resultEl.textContent = "업로드 중...";
+    btn.disabled = true;
+    resultEl.innerHTML = `<span class="spinner"></span> 업로드 중입니다... (문서가 많으면 시간이 걸릴 수 있습니다)`;
     try {
       const result = await apiUpload("/kb/upload", fd);
       const splitNote = result.inserted > 1
@@ -486,13 +488,17 @@ async function renderKb(main) {
       renderKb(main);
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
+    } finally {
+      btn.disabled = false;
     }
   });
 
-  document.getElementById("kb-sheet-upload-btn").addEventListener("click", async () => {
+  document.getElementById("kb-sheet-upload-btn").addEventListener("click", async (e) => {
+    const btn = e.target;
     const input = document.getElementById("kb-sheet-input");
     const resultEl = document.getElementById("kb-sheet-result");
-    resultEl.textContent = "가져오는 중...";
+    btn.disabled = true;
+    resultEl.innerHTML = `<span class="spinner"></span> 가져오는 중입니다... (문서가 많으면 시간이 걸릴 수 있습니다)`;
     try {
       const result = await api("/kb/google-sheet", {
         method: "POST", body: JSON.stringify({ url: input.value }),
@@ -502,6 +508,8 @@ async function renderKb(main) {
       renderKb(main);
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
+    } finally {
+      btn.disabled = false;
     }
   });
 }
