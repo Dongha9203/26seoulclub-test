@@ -216,6 +216,13 @@ class TestSearchResult:
 
 
 class TestHybridSearchEngine:
+    @pytest.fixture(autouse=True)
+    def _clear_corpus_cache(self):
+        from hybrid_search import clear_corpus_cache
+        clear_corpus_cache()
+        yield
+        clear_corpus_cache()
+
     @pytest.fixture
     def config(self):
         return {
@@ -240,7 +247,8 @@ class TestHybridSearchEngine:
     def test_search_no_documents_returns_empty(self, fake_provider, config):
         from hybrid_search import HybridSearchEngine
         engine = HybridSearchEngine(fake_provider, config)
-        with patch("hybrid_search.get_all_with_embeddings", return_value=[]):
+        with patch("hybrid_search.get_documents_fingerprint", return_value=(0, None)), \
+             patch("hybrid_search.get_all_with_embeddings", return_value=[]):
             results = engine.search("수당 지급 기준이 뭐예요?")
         assert results == []
 
@@ -256,7 +264,8 @@ class TestHybridSearchEngine:
         corpus = [(doc1, [1.0, 0.0, 0.0]), (doc2, [0.0, 1.0, 0.0])]
 
         engine = HybridSearchEngine(fake_provider, config)
-        with patch("hybrid_search.get_all_with_embeddings", return_value=corpus):
+        with patch("hybrid_search.get_documents_fingerprint", return_value=(2, "t1")), \
+             patch("hybrid_search.get_all_with_embeddings", return_value=corpus):
             results = engine.search("수당 지급 기준이 뭐예요?")
 
         assert len(results) == 2
@@ -271,7 +280,8 @@ class TestHybridSearchEngine:
         corpus = [(doc1, None)]  # 임베딩 누락
 
         engine = HybridSearchEngine(fake_provider, config)
-        with patch("hybrid_search.get_all_with_embeddings", return_value=corpus):
+        with patch("hybrid_search.get_documents_fingerprint", return_value=(1, "t1")), \
+             patch("hybrid_search.get_all_with_embeddings", return_value=corpus):
             results = engine.search("질문")
         assert len(results) == 1
         assert results[0].vector_score == 0.0
@@ -297,9 +307,87 @@ class TestHybridSearchEngine:
         from hybrid_search import HybridSearchEngine
         fake_provider.embed_query.side_effect = TimeoutError("voyage api timeout")
         engine = HybridSearchEngine(fake_provider, config)
-        with patch("hybrid_search.get_all_with_embeddings", return_value=[(MagicMock(), [1.0])]):
+        with patch("hybrid_search.get_documents_fingerprint", return_value=(1, "t1")), \
+             patch("hybrid_search.get_all_with_embeddings", return_value=[(MagicMock(), [1.0])]):
             with pytest.raises(TimeoutError):
                 engine.search("질문")
+
+
+class TestHybridSearchCorpusCache:
+    @pytest.fixture(autouse=True)
+    def _clear_corpus_cache(self):
+        from hybrid_search import clear_corpus_cache
+        clear_corpus_cache()
+        yield
+        clear_corpus_cache()
+
+    @pytest.fixture
+    def config(self):
+        return {
+            "embedding_model": "voyage-4",
+            "search_weights": {"vector": 0.6, "bm25": 0.4},
+            "search_top_k": 5,
+            "similarity_threshold": 0.55,
+        }
+
+    @pytest.fixture
+    def fake_provider(self):
+        provider = MagicMock()
+        provider.embed_query = MagicMock(return_value=[1.0, 0.0, 0.0])
+        return provider
+
+    def _doc(self, source_origin, title):
+        from models.document import Document
+        return Document.new(source_type="docx", source_origin=source_origin, title=title,
+                             content=title, category="미분류")
+
+    def test_reuses_cache_when_fingerprint_unchanged(self, fake_provider, config):
+        from hybrid_search import HybridSearchEngine
+        corpus = [(self._doc("a", "문서1"), [1.0, 0.0, 0.0])]
+
+        engine = HybridSearchEngine(fake_provider, config)
+        with patch("hybrid_search.get_documents_fingerprint", return_value=(1, "t1")), \
+             patch("hybrid_search.get_all_with_embeddings", return_value=corpus) as mock_fetch:
+            engine.search("질문1")
+            engine.search("질문2")
+
+        # fingerprint가 같으면 두 번째 검색에서는 코퍼스를 다시 불러오지 않아야 함
+        mock_fetch.assert_called_once()
+
+    def test_refetches_when_fingerprint_changes(self, fake_provider, config):
+        from hybrid_search import HybridSearchEngine
+        corpus_v1 = [(self._doc("a", "문서1"), [1.0, 0.0, 0.0])]
+        corpus_v2 = [(self._doc("a", "문서1"), [1.0, 0.0, 0.0]),
+                     (self._doc("b", "문서2"), [0.0, 1.0, 0.0])]
+
+        engine = HybridSearchEngine(fake_provider, config)
+        with patch("hybrid_search.get_documents_fingerprint",
+                   side_effect=[(1, "t1"), (2, "t2")]), \
+             patch("hybrid_search.get_all_with_embeddings",
+                   side_effect=[corpus_v1, corpus_v2]) as mock_fetch:
+            first = engine.search("질문1")
+            second = engine.search("질문2")
+
+        assert mock_fetch.call_count == 2
+        assert len(first) == 1
+        assert len(second) == 2
+
+    def test_different_models_cached_separately(self, fake_provider):
+        from hybrid_search import HybridSearchEngine
+        corpus = [(self._doc("a", "문서1"), [1.0, 0.0, 0.0])]
+
+        config_v3 = {"embedding_model": "voyage-3", "search_top_k": 5,
+                     "search_weights": {"vector": 0.6, "bm25": 0.4}, "similarity_threshold": 0.55}
+        config_v4 = {"embedding_model": "voyage-4", "search_top_k": 5,
+                     "search_weights": {"vector": 0.6, "bm25": 0.4}, "similarity_threshold": 0.55}
+
+        with patch("hybrid_search.get_documents_fingerprint", return_value=(1, "t1")), \
+             patch("hybrid_search.get_all_with_embeddings", return_value=corpus) as mock_fetch:
+            HybridSearchEngine(fake_provider, config_v3).search("질문")
+            HybridSearchEngine(fake_provider, config_v4).search("질문")
+
+        # 모델명이 다르면 같은 fingerprint라도 별도로 캐싱되어 각각 한 번씩 불러와야 함
+        assert mock_fetch.call_count == 2
 
 
 # ══════════════════════════════════════════════════════════════

@@ -8,16 +8,41 @@
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 from rank_bm25 import BM25Okapi
 
 from embedding_manager import EmbeddingProvider
 from morpheme_analyzer import extract_keywords
-from storage.supabase_store import get_all_with_embeddings
+from storage.supabase_store import get_all_with_embeddings, get_documents_fingerprint
 
 logger = logging.getLogger(__name__)
+
+# 모델명별 코퍼스(문서+임베딩) + BM25 인덱스 캐시. 매 검색마다 전체 코퍼스를
+# 다시 불러오고 BM25를 처음부터 재구축하는 비용을 피하기 위함입니다. documents
+# 테이블의 fingerprint(건수+최근수정시각)가 이전과 같으면 그대로 재사용하고,
+# 바뀌었을 때만 다시 불러옵니다 (지식 베이스 변경 시 자동 무효화).
+_corpus_cache: Dict[str, dict] = {}
+
+
+def clear_corpus_cache() -> None:
+    """코퍼스 캐시를 전부 비웁니다 (테스트, 또는 같은 프로세스 안에서 즉시 반영이 필요할 때)."""
+    _corpus_cache.clear()
+
+
+def _load_corpus(model_name: str, conn=None) -> dict:
+    fingerprint = get_documents_fingerprint(conn)
+    cached = _corpus_cache.get(model_name)
+    if cached is not None and cached["fingerprint"] == fingerprint:
+        return cached
+
+    corpus = get_all_with_embeddings(model_name, conn)
+    doc_tokens = [extract_keywords(doc.title + " " + doc.content) for doc, _ in corpus]
+    bm25 = BM25Okapi(doc_tokens) if any(doc_tokens) else None
+    cached = {"fingerprint": fingerprint, "corpus": corpus, "bm25": bm25}
+    _corpus_cache[model_name] = cached
+    return cached
 
 
 @dataclass
@@ -70,7 +95,8 @@ class HybridSearchEngine:
         if not query or not query.strip():
             raise ValueError("검색어가 비어있습니다.")
 
-        corpus = get_all_with_embeddings(self._embedding_model, conn)
+        cached = _load_corpus(self._embedding_model, conn)
+        corpus, bm25 = cached["corpus"], cached["bm25"]
         if not corpus:
             logger.warning("검색 대상 문서가 없습니다 (지식DB 비어있음).")
             return []
@@ -85,10 +111,8 @@ class HybridSearchEngine:
             else:
                 vector_scores.append(max(0.0, _cosine_similarity(query_embedding, embedding)))
 
-        doc_tokens = [extract_keywords(doc.title + " " + doc.content) for doc, _ in corpus]
-        # 모든 문서 토큰이 비어있으면 BM25 인스턴스화가 무의미하므로 전부 0점 처리
-        if any(doc_tokens):
-            bm25 = BM25Okapi(doc_tokens)
+        # bm25가 None이면(코퍼스 전체가 빈 토큰) BM25 인스턴스화가 무의미하므로 전부 0점 처리
+        if bm25 is not None:
             query_tokens = extract_keywords(query)
             raw_bm25_scores = [float(s) for s in bm25.get_scores(query_tokens)]
         else:

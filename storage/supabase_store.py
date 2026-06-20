@@ -1,4 +1,5 @@
 import os
+from datetime import datetime, timezone
 from typing import List, Optional, Dict, Tuple
 
 import psycopg2
@@ -244,13 +245,18 @@ def upsert_sync_metadata(page_key: str, last_edited: str, synced_at: str, conn=N
 
 
 def update_embedding(doc_id: str, embedding: List[float], model_name: str, conn=None) -> None:
-    """문서 1건의 임베딩 벡터를 저장합니다 (JSONB)."""
+    """문서 1건의 임베딩 벡터를 저장합니다 (JSONB).
+
+    검색 결과에 영향을 주는 변경이므로 last_updated도 함께 갱신합니다
+    (hybrid_search.py의 코퍼스 캐시가 이 값으로 무효화 여부를 판단합니다)."""
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
             cur.execute(
-                "UPDATE documents SET embedding = %s, embedding_model = %s WHERE doc_id = %s",
-                (psycopg2.extras.Json(embedding), model_name, doc_id),
+                "UPDATE documents SET embedding = %s, embedding_model = %s, last_updated = %s "
+                "WHERE doc_id = %s",
+                (psycopg2.extras.Json(embedding), model_name,
+                 datetime.now(timezone.utc).isoformat(), doc_id),
             )
         c.commit()
     finally:
@@ -296,6 +302,22 @@ def get_all_with_embeddings(model_name: str, conn=None) -> List[Tuple[Document, 
             embedding = None
         results.append((doc, embedding))
     return results
+
+
+def get_documents_fingerprint(conn=None) -> Tuple[int, Optional[str]]:
+    """문서 총 건수 + 가장 최근 last_updated만 가볍게 조회합니다.
+
+    hybrid_search.py가 매 요청마다 전체 코퍼스를 다시 불러오는 대신, 이 값이
+    이전과 같으면 캐시를 그대로 재사용해도 안전한지 판단하는 데 씁니다."""
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt, MAX(last_updated) AS latest FROM documents")
+            row = cur.fetchone()
+    finally:
+        if owns_conn:
+            c.close()
+    return (row["cnt"], row["latest"])
 
 
 def insert_qa_log(entry: Dict, conn=None) -> None:
