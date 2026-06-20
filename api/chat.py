@@ -58,7 +58,6 @@ def _build_config() -> dict:
     merged = dict(static)
     merged.update({
         "operation_team": dynamic["operation_team"],
-        "similarity_threshold": dynamic["similarity_threshold"],
         "search_weights": dynamic["search_weights"],
         "search_top_k": dynamic["search_top_k"],
         "repeat_threshold": dynamic["repeat_threshold"],

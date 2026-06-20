@@ -104,13 +104,11 @@ function bindAccordions(root) {
 const routes = {
   "daily-counts": renderDailyCounts,
   "qa-logs": renderQaLogs,
-  "score-distribution": renderScoreDistribution,
   "incomplete": () => renderActionList("incomplete", "불완전 답변 조회", "검색에 실패했거나, 질문이 너무 모호해서(예: '이거 뭐예요?'처럼 무엇에 대한 질문인지 알 수 있는 단어가 없는 경우) 챗봇이 직접 답하지 않고 운영팀 연락처만 안내한 건"),
   "unresolved": () => renderActionList("unresolved", "미해결 답변 조회", "지식 베이스에 내용이 없거나, 프로그램과 무관한 질문(예: '오늘 날씨 어때요?')이라 답변할 수 없어서, 챗봇이 직접 답하지 않고 운영팀 연락처만 안내한 건"),
   "failure-report": renderFailureReport,
   "operation-team": renderOperationTeam,
   "kb": renderKb,
-  "threshold": renderThreshold,
   "tone": renderTone,
   "keywords": renderKeywords,
   "api-params": renderApiParams,
@@ -205,42 +203,6 @@ async function renderQaLogs(main, page = 0) {
   });
   document.getElementById("qa-logs-more").addEventListener("click", () => {
     renderQaLogs(main, page + 1);
-  });
-}
-
-async function renderScoreDistribution(main) {
-  const data = await api("/monitoring/score-distribution");
-  const labels = Object.keys(data.distribution);
-  const values = Object.values(data.distribution);
-  main.innerHTML = `<h1>신뢰도 분포 차트</h1>` + cardWithDetail(
-    "신뢰도 점수 분포 (0.0~1.0, 0.1 단위 구간)", "",
-    "가로축은 신뢰도 점수 구간(0.0~1.0), 세로축은 그 구간에 해당하는 질문 건수입니다. " +
-    "점수가 0에 가까울수록 챗봇이 질문과 관련된 내용을 거의 찾지 못했다는 뜻이고, " +
-    "1에 가까울수록 질문과 일치하는 내용을 확실하게 찾았다는 뜻입니다. " +
-    "'신뢰도 threshold 조정' 메뉴에서 기준값을 바꿀 때 참고하면 됩니다.",
-    `<canvas id="score-chart" height="120"></canvas>`
-  );
-  bindAccordions(main);
-
-  const allZero = values.every((v) => v === 0);
-  if (allZero) {
-    document.getElementById("score-chart").outerHTML = `<p class="muted">아직 집계할 데이터가 없습니다.</p>`;
-    return;
-  }
-  new Chart(document.getElementById("score-chart"), {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [{ label: "건수", data: values, backgroundColor: "#2563EB" }],
-    },
-    options: {
-      responsive: true,
-      plugins: { legend: { display: false } },
-      scales: {
-        x: { title: { display: true, text: "신뢰도 점수 구간" } },
-        y: { beginAtZero: true, ticks: { precision: 0 }, title: { display: true, text: "질문 건수" } },
-      },
-    },
   });
 }
 
@@ -499,42 +461,6 @@ async function renderKb(main) {
       });
       resultEl.innerHTML = `<span class="success-text">${result.inserted}건 저장 완료</span>`;
       renderKb(main);
-    } catch (err) {
-      resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
-    }
-  });
-}
-
-async function renderThreshold(main) {
-  const settings = await api("/settings");
-  main.innerHTML = `<h1>신뢰도 threshold 조정</h1>` + cardWithDetail(
-    "similarity_threshold", `현재 값: ${settings.similarity_threshold}`,
-    "검색 결과의 결합 점수가 이 값보다 낮으면 Claude에게 \"확신이 낮을 수 있다\"는 참고 신호를 함께 전달합니다. " +
-    "다만 이 값 자체가 답변 여부를 차단하지는 않습니다 — 검색 결과가 있으면 점수와 무관하게 항상 Claude에게 보여주고, " +
-    "실제로 답할 수 있는지는 Claude가 문서 내용을 직접 읽고 판단합니다(코퍼스가 작을 때는 점수만으로 관련성을 " +
-    "정확히 판단하기 어려운 한계가 있어 이렇게 운영합니다).",
-    `
-    <form id="threshold-form">
-      <label>similarity_threshold (0.0 ~ 1.0)</label>
-      <input type="number" name="threshold" min="0" max="1" step="0.01" value="${settings.similarity_threshold}" required>
-      <div style="margin-top:14px; display:flex; align-items:center; gap:10px;">
-        <button type="submit" class="btn">저장</button>
-        <span id="threshold-result"></span>
-      </div>
-    </form>
-    `
-  );
-  bindAccordions(main);
-
-  document.getElementById("threshold-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const value = parseFloat(e.target.threshold.value);
-    const resultEl = document.getElementById("threshold-result");
-    try {
-      await api("/settings/similarity-threshold", {
-        method: "PUT", body: JSON.stringify({ similarity_threshold: value }),
-      });
-      resultEl.innerHTML = `<span class="success-text">저장되었습니다.</span>`;
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
     }

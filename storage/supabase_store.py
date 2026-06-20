@@ -391,27 +391,6 @@ def get_qa_logs_paginated(limit: int = 50, offset: int = 0, conn=None) -> List[D
     return [dict(r) for r in rows]
 
 
-def get_score_distribution(conn=None) -> Dict[str, int]:
-    """top_score를 0.1 단위 구간으로 묶어 신뢰도 분포 차트 데이터를 만듭니다."""
-    c, owns_conn = _with_conn(conn)
-    try:
-        with c.cursor() as cur:
-            cur.execute(
-                "SELECT WIDTH_BUCKET(top_score, 0, 1, 10) AS bucket, COUNT(*) AS cnt "
-                "FROM qa_log WHERE top_score IS NOT NULL GROUP BY bucket ORDER BY bucket"
-            )
-            rows = cur.fetchall()
-    finally:
-        if owns_conn:
-            c.close()
-    buckets = {f"{(b-1)/10:.1f}-{b/10:.1f}": 0 for b in range(1, 11)}
-    for r in rows:
-        b = max(1, min(10, r["bucket"]))
-        key = f"{(b-1)/10:.1f}-{b/10:.1f}"
-        buckets[key] = buckets.get(key, 0) + r["cnt"]
-    return buckets
-
-
 def delete_old_qa_logs(days: int = 365, conn=None) -> int:
     """보존기간(기본 1년)이 지난 qa_log 행을 삭제합니다 (일일 cron에서 호출).
 

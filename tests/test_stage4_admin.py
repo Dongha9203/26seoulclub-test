@@ -299,15 +299,6 @@ class TestQaLogAggregation:
         page1 = get_qa_logs_paginated(2, 0, pg_conn)
         assert len(page1) == 2
 
-    def test_get_score_distribution_buckets(self, pg_conn):
-        # 실제 운영 DB의 qa_log에는 이미 데이터가 있으므로 절대값이 아니라
-        # 삽입 전/후 증가분으로 검증합니다(공유 DB에 안전한 패턴).
-        from storage.supabase_store import insert_qa_log, get_score_distribution
-        before = get_score_distribution(pg_conn).get("0.9-1.0", 0)
-        insert_qa_log(_make_log_entry(top_score=0.95), pg_conn)
-        after = get_score_distribution(pg_conn)
-        assert after["0.9-1.0"] == before + 1
-
     def test_get_logs_by_failure_causes_filters_correctly(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_logs_by_failure_causes
         entry_incomplete = _make_log_entry(failure_cause="검색실패")
@@ -555,11 +546,6 @@ class TestAdminApi:
         res = client.get("/monitoring/qa-logs", headers=self.auth_header(operator))
         assert res.status_code == 200
 
-    def test_score_distribution_success(self, client, operator):
-        res = client.get("/monitoring/score-distribution", headers=self.auth_header(operator))
-        assert res.status_code == 200
-        assert len(res.json()["distribution"]) == 10
-
     # ── 조치관리 ────────────────────────────────────────────────
 
     def test_incomplete_answers_filters_correctly(self, client, operator, pg_conn):
@@ -619,17 +605,6 @@ class TestAdminApi:
         })
         assert res.status_code == 200
         assert res.json()["operation_team"]["name"] == "새팀"
-
-    def test_update_similarity_threshold_out_of_range_returns_400(self, client, operator, settings_seeded):
-        res = client.put("/settings/similarity-threshold", headers=self.auth_header(operator),
-                          json={"similarity_threshold": 1.5})
-        assert res.status_code == 400
-
-    def test_update_similarity_threshold_success(self, client, operator, settings_seeded):
-        res = client.put("/settings/similarity-threshold", headers=self.auth_header(operator),
-                          json={"similarity_threshold": 0.6})
-        assert res.status_code == 200
-        assert res.json()["similarity_threshold"] == 0.6
 
     def test_update_tone_success_reflected_immediately(self, client, operator, settings_seeded):
         res = client.put("/settings/tone", headers=self.auth_header(operator), json={

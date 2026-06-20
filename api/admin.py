@@ -118,12 +118,6 @@ def qa_logs(limit: int = 50, offset: int = 0, operator_email: str = Depends(get_
     return {"logs": get_qa_logs_paginated(limit, offset)}
 
 
-@app.get("/monitoring/score-distribution")
-def score_distribution(operator_email: str = Depends(get_current_operator)):
-    from storage.supabase_store import get_score_distribution
-    return {"distribution": get_score_distribution()}
-
-
 # ──────────────────────────────────────────────────────────────────
 # ② 조치관리
 # ──────────────────────────────────────────────────────────────────
@@ -187,19 +181,6 @@ def update_operation_team(req: OperationTeamUpdate,
                            operator_email: str = Depends(get_current_operator)):
     from storage.settings_store import update_settings
     return update_settings({"operation_team": req.model_dump()})
-
-
-class ThresholdUpdate(BaseModel):
-    similarity_threshold: float
-
-
-@app.put("/settings/similarity-threshold")
-def update_similarity_threshold(req: ThresholdUpdate,
-                                 operator_email: str = Depends(get_current_operator)):
-    if not (0.0 <= req.similarity_threshold <= 1.0):
-        raise HTTPException(status_code=400, detail="similarity_threshold는 0.0~1.0 사이여야 합니다.")
-    from storage.settings_store import update_settings
-    return update_settings({"similarity_threshold": req.similarity_threshold})
 
 
 class ToneUpdate(BaseModel):
