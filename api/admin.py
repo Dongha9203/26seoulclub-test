@@ -99,11 +99,13 @@ def change_password(req: ChangePasswordRequest, operator_email: str = Depends(ge
 # ──────────────────────────────────────────────────────────────────
 
 @app.get("/monitoring/daily-counts")
-def daily_counts(days: int = 30, operator_email: str = Depends(get_current_operator)):
+def daily_counts(limit: int = 30, offset: int = 0, operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_daily_qa_counts
-    if days <= 0 or days > 365:
-        raise HTTPException(status_code=400, detail="days는 1~365 사이여야 합니다.")
-    return {"daily_counts": get_daily_qa_counts(days)}
+    if limit <= 0 or limit > 200:
+        raise HTTPException(status_code=400, detail="limit은 1~200 사이여야 합니다.")
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="offset은 0 이상이어야 합니다.")
+    return {"daily_counts": get_daily_qa_counts(limit, offset)}
 
 
 @app.get("/monitoring/qa-logs")

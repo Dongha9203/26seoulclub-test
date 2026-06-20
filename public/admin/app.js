@@ -143,19 +143,34 @@ window.addEventListener("hashchange", navigate);
 
 // ── ① 모니터링 ─────────────────────────────────────────────────
 
-async function renderDailyCounts(main) {
-  const data = await api("/monitoring/daily-counts?days=30");
+async function renderDailyCounts(main, page = 0) {
+  const limit = 30;
+  const data = await api(`/monitoring/daily-counts?limit=${limit}&offset=${page * limit}`);
   const rows = data.daily_counts.map(
     (d) => `<tr><td>${escapeHtml(d.day)}</td><td>${d.count}</td></tr>`
   ).join("");
+  const hasMore = data.daily_counts.length === limit;
   main.innerHTML = `<h1>일별 질의/응답 건수</h1>` + cardWithDetail(
-    "최근 30일 집계", "최근 30일간 날짜별로 집계한 결과입니다.",
+    "날짜별 집계 (한 번에 최대 30건)",
+    "최근 날짜부터 날짜별로 집계한 결과입니다. (자료가 최고 1년을 보관하고 이후 자동삭제 되어, 1년이 지난 건은 집계에서 빠집니다.)",
     "매일 챗봇에 들어온 질문 수를 날짜별로 보여줍니다. 운영 추이를 파악하는 데 사용합니다.",
-    data.daily_counts.length
+    (data.daily_counts.length
       ? `<table><thead><tr><th>날짜</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
-      : `<p class="muted">최근 30일간 데이터가 없습니다.</p>`
+      : `<p class="muted">데이터가 없습니다.</p>`)
+    + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
+        <button id="daily-counts-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
+        <span>페이지 ${page + 1}</span>
+        <button id="daily-counts-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
+      </div>`
   );
   bindAccordions(main);
+
+  document.getElementById("daily-counts-prev").addEventListener("click", () => {
+    renderDailyCounts(main, page - 1);
+  });
+  document.getElementById("daily-counts-more").addEventListener("click", () => {
+    renderDailyCounts(main, page + 1);
+  });
 }
 
 async function renderQaLogs(main, page = 0) {

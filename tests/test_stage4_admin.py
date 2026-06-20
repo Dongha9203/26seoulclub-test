@@ -273,7 +273,7 @@ class TestQaLogAggregation:
     def test_get_daily_qa_counts(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_daily_qa_counts
         insert_qa_log(_make_log_entry(), pg_conn)
-        counts = get_daily_qa_counts(30, pg_conn)
+        counts = get_daily_qa_counts(30, 0, pg_conn)
         assert sum(c["count"] for c in counts) >= 1
 
     def test_get_daily_qa_counts_empty(self):
@@ -284,7 +284,13 @@ class TestQaLogAggregation:
         mock_cursor.fetchall.return_value = []
         mock_conn = MagicMock()
         mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-        assert get_daily_qa_counts(30, mock_conn) == []
+        assert get_daily_qa_counts(30, 0, mock_conn) == []
+
+    def test_get_daily_qa_counts_pagination(self, pg_conn):
+        from storage.supabase_store import insert_qa_log, get_daily_qa_counts
+        insert_qa_log(_make_log_entry(), pg_conn)
+        page1 = get_daily_qa_counts(1, 0, pg_conn)
+        assert len(page1) == 1
 
     def test_get_qa_logs_paginated(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_qa_logs_paginated
@@ -537,8 +543,8 @@ class TestAdminApi:
         assert res.status_code == 200
         assert "daily_counts" in res.json()
 
-    def test_daily_counts_invalid_days_returns_400(self, client, operator):
-        res = client.get("/monitoring/daily-counts?days=0", headers=self.auth_header(operator))
+    def test_daily_counts_invalid_limit_returns_400(self, client, operator):
+        res = client.get("/monitoring/daily-counts?limit=0", headers=self.auth_header(operator))
         assert res.status_code == 400
 
     def test_qa_logs_invalid_limit_returns_400(self, client, operator):

@@ -358,16 +358,15 @@ def get_recent_qa_logs(limit: int, conn=None) -> List[Dict]:
     return [{"session_id": r["session_id"], "keywords": r["keywords"]} for r in rows]
 
 
-def get_daily_qa_counts(days: int = 30, conn=None) -> List[Dict]:
-    """최근 days일간 일별 질의/응답 건수 (모니터링 화면용)."""
+def get_daily_qa_counts(limit: int = 30, offset: int = 0, conn=None) -> List[Dict]:
+    """일별 질의/응답 건수를 최신 날짜부터 페이지 단위로 반환합니다 (모니터링 화면용)."""
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
             cur.execute(
                 "SELECT DATE(timestamp) AS day, COUNT(*) AS cnt FROM qa_log "
-                "WHERE timestamp >= NOW() - make_interval(days => %s) "
-                "GROUP BY DATE(timestamp) ORDER BY day",
-                (days,),
+                "GROUP BY DATE(timestamp) ORDER BY day DESC LIMIT %s OFFSET %s",
+                (limit, offset),
             )
             rows = cur.fetchall()
     finally:
