@@ -16,7 +16,8 @@ from hybrid_search import SearchResult
 ANSWER_TOOL = {
     "name": "provide_answer",
     "description": (
-        "사용자 질문에 대한 한국어 답변과, 사용자 질문 문장 자체에 담긴 감정 점수를 함께 반환합니다. "
+        "사용자 질문에 대한 한국어 답변과, 사용자 질문 문장 자체에 담긴 감정 점수, "
+        "그리고 이 답변이 실제로 질문을 해결했는지를 함께 반환합니다. "
         "answer는 제공된 문서 내용에 근거한 최종 응답 텍스트이고, sentiment_score는 사용자의 "
         "질문 톤이 얼마나 부정적(-1.0)이거나 긍정적(+1.0)인지를 나타내는 값입니다(중립은 0.0)."
     ),
@@ -31,8 +32,22 @@ ANSWER_TOOL = {
                 "type": "number",
                 "description": "사용자 질문의 감정 점수, -1.0(매우 부정)에서 1.0(매우 긍정) 사이",
             },
+            "resolution_status": {
+                "type": "string",
+                "enum": ["해결됨", "검색실패", "지식DB공백", "정책밖요청"],
+                "description": (
+                    "이 답변이 실제로 질문을 해결했는지 자체 판단. "
+                    "'해결됨': 제공된 문서로 질문에 실질적인 정보를 답변함. "
+                    "'검색실패': 서울 동아리ON 운영과 명백히 관련된 질문이지만, 제공된 문서에 "
+                    "구체적인 답을 찾을 수 없어 운영팀 안내로 답변함. "
+                    "'지식DB공백': 서울 동아리ON과 관련은 있어 보이나, 제공된 문서가 전혀 다루지 "
+                    "않는 주제라 운영팀 안내로 답변함. "
+                    "'정책밖요청': 서울 동아리ON 운영과 무관한 질문(날씨, 요리, 일반 상식, 다른 "
+                    "서비스 요청 등)이라 답변 대상이 아니라고 안내함."
+                ),
+            },
         },
-        "required": ["answer", "sentiment_score"],
+        "required": ["answer", "sentiment_score", "resolution_status"],
         "additionalProperties": False,
     },
     "strict": True,
@@ -96,8 +111,8 @@ def build_system_prompt(tone_instruction: str, search_results: List[SearchResult
 
 
 def call_claude(client: anthropic.Anthropic, model: str, system_prompt: str,
-                 question: str) -> Tuple[str, float]:
-    """Claude API를 1회 호출해 (answer, sentiment_score)를 반환합니다."""
+                 question: str) -> Tuple[str, float, str]:
+    """Claude API를 1회 호출해 (answer, sentiment_score, resolution_status)를 반환합니다."""
     response = client.messages.create(
         model=model,
         max_tokens=1024,
@@ -110,6 +125,6 @@ def call_claude(client: anthropic.Anthropic, model: str, system_prompt: str,
     for block in response.content:
         if block.type == "tool_use" and block.name == "provide_answer":
             data = block.input
-            return data["answer"], float(data["sentiment_score"])
+            return data["answer"], float(data["sentiment_score"]), data["resolution_status"]
 
     raise RuntimeError("Claude 응답에서 provide_answer tool_use 블록을 찾지 못했습니다.")

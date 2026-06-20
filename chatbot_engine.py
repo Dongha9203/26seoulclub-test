@@ -200,6 +200,35 @@ class ChatbotEngine:
         keywords, category = analysis["keywords"], analysis["category"]
         repeated_count = self._count_repeated(session_id, keywords)
 
+        # ── step: 질문모호성 사전 체크 ────────────────────────────────────
+        # 의미를 담은 키워드가 하나도 없는 질문은 검색/Claude 호출 결과와 무관하게
+        # 항상 모호한 질문입니다. 검색 신뢰도(is_confident)는 코퍼스가 작을 때
+        # 질문 관련성과 무관하게 통과되는 경우가 있어(실제 발견된 한계), 이 체크는
+        # 신뢰도 결과를 기다리지 않고 먼저 수행합니다 — 검색/임베딩 호출도 절약됩니다.
+        if len(keywords) < self._min_keywords:
+            answer = (
+                "죄송합니다, 문의하신 내용을 정확히 확인하기 어려워요. "
+                "아래 운영팀으로 직접 문의해 주시면 빠르게 도와드릴게요.\n\n"
+                + _format_operation_team_contact(self._config)
+            )
+            response = ChatbotResponse(
+                answer=answer, situation=None, response_attitude=None,
+                failure_cause=FailureCause.QUESTION_AMBIGUITY, sentiment_score=None, search_success=False,
+                blocked_by_filter=False, escalated_to_operation_team=True,
+                top_score=0.0, deep_link=None, repeated_count=repeated_count,
+                category=category, keywords=keywords,
+            )
+            self._write_log({
+                "log_id": log_id, "timestamp": timestamp, "session_id": session_id,
+                "question": question, "keywords": keywords, "question_category": category,
+                "blocked_by_filter": False, "search_success": False, "top_score": 0.0,
+                "failure_cause": FailureCause.QUESTION_AMBIGUITY.value, "situation": None, "response_attitude": None,
+                "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
+                "matched_doc_ids": [], "deep_link": None,
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+            })
+            return response
+
         # ── step: 하이브리드 검색 ─────────────────────────────────────────
         results = self._search_engine.search(question, self._conn)
         confident = self._search_engine.is_confident(results)
@@ -277,20 +306,28 @@ class ChatbotEngine:
             _format_operation_team_contact(self._config) if situation == Situation.INFO_GAP else None
         )
         system_prompt = build_system_prompt(tone_instruction, results, low_confidence, operation_team_contact)
-        answer, sentiment_score = call_claude(
+        answer, sentiment_score, resolution_status = call_claude(
             self._anthropic_client, self._llm_model, system_prompt, question
         )
 
+        matched_doc_ids = [r.doc_id for r in results]
+
+        # ── Claude 스스로 판단한 해결 여부를 failure_cause로 반영 ──────────
+        # is_confident()는 코퍼스가 작을 때 질문 관련성과 무관하게 통과되는
+        # 경우가 있어(실제 발견된 한계) 신뢰도 통과 여부만으로는 실제 해결 여부를
+        # 알 수 없습니다. 같은 호출 안에서 Claude가 직접 보고하는 resolution_status를
+        # 대신 사용하면 코퍼스 크기와 무관하게 정확한 분류가 가능합니다.
+        resolved = resolution_status == "해결됨"
+        failure_cause = None if resolved else FailureCause(resolution_status)
         deep_link = next(
             (r.deep_link_url() for r in results if r.source_type == "notion" and r.deep_link_url()),
             None,
-        )
-        matched_doc_ids = [r.doc_id for r in results]
+        ) if resolved else None
 
         response = ChatbotResponse(
             answer=answer, situation=situation, response_attitude=attitude,
-            failure_cause=None, sentiment_score=sentiment_score, search_success=True,
-            blocked_by_filter=False, escalated_to_operation_team=False,
+            failure_cause=failure_cause, sentiment_score=sentiment_score, search_success=resolved,
+            blocked_by_filter=False, escalated_to_operation_team=not resolved,
             top_score=results[0].combined_score, deep_link=deep_link,
             matched_doc_ids=matched_doc_ids, repeated_count=repeated_count,
             category=category, keywords=keywords,
@@ -298,12 +335,13 @@ class ChatbotEngine:
         self._write_log({
             "log_id": log_id, "timestamp": timestamp, "session_id": session_id,
             "question": question, "keywords": keywords, "question_category": category,
-            "blocked_by_filter": False, "search_success": True,
-            "top_score": results[0].combined_score, "failure_cause": None,
+            "blocked_by_filter": False, "search_success": resolved,
+            "top_score": results[0].combined_score,
+            "failure_cause": failure_cause.value if failure_cause else None,
             "situation": situation.value, "response_attitude": attitude.value,
             "answer": answer, "sentiment_score": sentiment_score,
             "repeated_count": repeated_count, "matched_doc_ids": matched_doc_ids,
-            "deep_link": deep_link, "escalated_to_operation_team": False,
+            "deep_link": deep_link, "escalated_to_operation_team": not resolved,
             "latency_ms": _elapsed_ms(start),
         })
         return response

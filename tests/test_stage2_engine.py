@@ -516,15 +516,16 @@ class TestPromptBuilder:
         block = MagicMock()
         block.type = "tool_use"
         block.name = "provide_answer"
-        block.input = {"answer": "수당은 매월 말일 지급됩니다.", "sentiment_score": 0.2}
+        block.input = {"answer": "수당은 매월 말일 지급됩니다.", "sentiment_score": 0.2, "resolution_status": "해결됨"}
 
         fake_response = MagicMock(content=[block])
         fake_client = MagicMock()
         fake_client.messages.create = MagicMock(return_value=fake_response)
 
-        answer, sentiment = call_claude(fake_client, "claude-sonnet-4-6", "시스템프롬프트", "질문")
+        answer, sentiment, resolution_status = call_claude(fake_client, "claude-sonnet-4-6", "시스템프롬프트", "질문")
         assert answer == "수당은 매월 말일 지급됩니다."
         assert sentiment == 0.2
+        assert resolution_status == "해결됨"
 
     def test_call_claude_missing_tool_use_block_raises(self):
         from prompt_builder import call_claude
@@ -661,7 +662,7 @@ class TestChatbotEngine:
         block.type = "tool_use"
         block.name = "provide_answer"
         block.input = {"answer": "수당은 매월 말일 지급됩니다. (자세한 내용: [수당 지급 기준 바로가기])",
-                       "sentiment_score": 0.1}
+                       "sentiment_score": 0.1, "resolution_status": "해결됨"}
         engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
 
         response = engine.handle_question("수당 언제 들어와요?", "session-3")
@@ -669,8 +670,53 @@ class TestChatbotEngine:
         assert response.search_success is True
         assert response.situation == Situation.NORMAL_RESPONSE
         assert response.sentiment_score == 0.1
+        assert response.failure_cause is None
         assert response.deep_link == "https://notion.so/abc#12345678123412341234123456789abc"
         assert response.escalated_to_operation_team is False
+
+    def test_handle_question_claude_reports_unresolved_sets_failure_cause(self, engine):
+        """is_confident()가 True여도 Claude가 resolution_status로 미해결을 보고하면
+        failure_cause가 채워지고 딥링크 없이 운영팀으로 안내해야 합니다 (실제 발견된
+        is_confident() 한계에 대한 보강 로직)."""
+        from hybrid_search import SearchResult
+        from failure_analyzer import FailureCause
+
+        results = [SearchResult(
+            doc_id="d1", title="수당 지급 기준", content="활동 수당은 매월 말일 지급됩니다.",
+            category="미분류", source_type="notion",
+            notion_block_id="12345678-1234-1234-1234-123456789abc",
+            notion_page_url="https://notion.so/abc", vector_score=0.33, bm25_score=0.5,
+            combined_score=0.6,
+        )]
+        engine._search_engine.search.return_value = results
+        engine._search_engine.is_confident.return_value = True
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = "provide_answer"
+        block.input = {
+            "answer": "죄송하지만 저는 동아리ON 운영 관련 문의만 도와드릴 수 있어요.",
+            "sentiment_score": 0.0, "resolution_status": "정책밖요청",
+        }
+        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+
+        response = engine.handle_question("오늘 서울 날씨 어때요?", "session-11")
+
+        assert response.search_success is False
+        assert response.failure_cause == FailureCause.OUT_OF_POLICY
+        assert response.deep_link is None
+        assert response.escalated_to_operation_team is True
+
+    def test_handle_question_ambiguous_question_skips_search_and_llm(self, engine):
+        from failure_analyzer import FailureCause
+
+        response = engine.handle_question("음", "session-12")
+
+        assert response.failure_cause == FailureCause.QUESTION_AMBIGUITY
+        assert response.search_success is False
+        assert response.escalated_to_operation_team is True
+        engine._search_engine.search.assert_not_called()
+        engine._anthropic_client.messages.create.assert_not_called()
 
     def test_handle_question_search_failure_answer_contains_operation_team_contact(self, engine):
         engine._search_engine.search.return_value = []
@@ -728,7 +774,7 @@ class TestChatbotEngine:
         block.type = "tool_use"
         block.name = "provide_answer"
         block.input = {"answer": "해당 내용은 안내 자료에 없어 운영팀 문의가 필요합니다.",
-                       "sentiment_score": 0.0}
+                       "sentiment_score": 0.0, "resolution_status": "검색실패"}
         engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
 
         # 질문 카테고리(수당 지급 기준 안내)와 검색결과 카테고리(출결 및 활동기준 안내)를
@@ -736,6 +782,8 @@ class TestChatbotEngine:
         response = engine.handle_question("수당 지급 기준이 뭐예요?", "session-10")
 
         assert response.situation == Situation.INFO_GAP
+        from failure_analyzer import FailureCause
+        assert response.failure_cause == FailureCause.SEARCH_FAILURE
         system_prompt = engine._anthropic_client.messages.create.call_args.kwargs["system"]
         assert "02-0000-0000" in system_prompt
         assert "ops@test.com" in system_prompt
