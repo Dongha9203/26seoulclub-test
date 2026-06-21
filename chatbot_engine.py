@@ -99,12 +99,13 @@ def contains_forbidden_word(text: str, forbidden_words: List[str]) -> bool:
 def _format_operation_team_contact(config: dict) -> str:
     team = config.get("operation_team", {})
     emails = ", ".join(team.get("email_list", []))
-    return (
-        f"서울 동아리ON 운영팀\n"
-        f"- 전화: {team.get('phone', '')}\n"
-        f"- 이메일: {emails}\n"
-        f"- 운영시간: {team.get('operating_hours', '')}"
-    )
+    lines = [team.get("name") or "서울 동아리ON 운영팀"]
+    if team.get("address"):
+        lines.append(f"- 주소: {team['address']}")
+    lines.append(f"- 전화: {team.get('phone', '')}")
+    lines.append(f"- 이메일: {emails}")
+    lines.append(f"- 운영시간: {team.get('operating_hours', '')}")
+    return "\n".join(lines)
 
 
 def _elapsed_ms(start: float) -> int:

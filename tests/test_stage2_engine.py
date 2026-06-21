@@ -463,6 +463,13 @@ class TestSituationClassifier:
         result = classifier.classify(self._inp(question="상담원 연결해주세요"))
         assert result == Situation.ESCALATION_NEEDED
 
+    def test_classify_contact_info_request_is_escalation(self, classifier):
+        """담당자/운영자 연락처 문의는 RAG가 무관한 문서(예: 오픈채팅 안내)를 섞어
+        답변하지 않도록, 검색 없이 고정 연락처 템플릿(에스컬레이션)으로 처리해야 합니다."""
+        from tone_matrix import Situation
+        for question in ["담당자 연락처 알려줘", "운영자 연락처 알려줘", "운영팀 연락처 알려줘"]:
+            assert classifier.classify(self._inp(question=question)) == Situation.ESCALATION_NEEDED
+
     def test_classify_repeated_question(self, classifier):
         from tone_matrix import Situation
         result = classifier.classify(self._inp(question="평범한 질문", repeated=2))
@@ -697,10 +704,13 @@ class TestFormatOperationTeamContact:
     def test_format_operation_team_contact_includes_fields(self):
         from chatbot_engine import _format_operation_team_contact
         config = {"operation_team": {
-            "name": "동아리ON 운영팀", "phone": "02-1234-5678",
+            "name": "동아리ON 운영팀", "address": "서울특별시 중구 수표로 12",
+            "phone": "02-1234-5678",
             "email_list": ["a@test.com", "b@test.com"], "operating_hours": "평일 9-18시",
         }}
         text = _format_operation_team_contact(config)
+        assert "동아리ON 운영팀" in text
+        assert "서울특별시 중구 수표로 12" in text
         assert "02-1234-5678" in text
         assert "a@test.com" in text
         assert "평일 9-18시" in text
