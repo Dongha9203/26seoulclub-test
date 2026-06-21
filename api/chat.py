@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 _root = Path(__file__).parent.parent
@@ -112,3 +112,45 @@ def chat(req: ChatRequest):
         return JSONResponse(status_code=500, content={"error": "일시적인 오류가 발생했습니다."})
 
     return ChatResponse(answer=response.answer, deep_link=response.deep_link)
+
+
+@app.post("/api/chat/stream")
+def chat_stream(req: ChatRequest):
+    """위젯이 답변을 받는 즉시 글자 단위로 보여줄 수 있도록 SSE로 스트리밍합니다.
+
+    이벤트 형식: data: {"type": "delta", "text": "..."} 또는
+    {"type": "done", "answer": "...", "deep_link": "..."} 또는 {"type": "error", "error": "..."}.
+    질문 글자수/분당 요청 제한 체크는 스트림을 열기 전에 먼저 끝내서, /api/chat과
+    동일하게 평범한 400/429 JSON 응답으로 처리합니다.
+    """
+    from storage.supabase_store import count_recent_requests
+    from chatbot_engine import ChatbotEngine
+
+    config = _build_config()
+    max_len = config.get("max_question_length", 500)
+    rate_limit = config.get("rate_limit_per_minute", 10)
+
+    if len(req.question) > max_len:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"질문은 {max_len}자 이하로 입력해주세요."},
+        )
+
+    if count_recent_requests(req.session_id, 60) >= rate_limit:
+        return JSONResponse(
+            status_code=429,
+            content={"error": "잠시 후 다시 시도해주세요."},
+        )
+
+    def event_stream():
+        try:
+            engine = ChatbotEngine(config)
+            for event in engine.handle_question_stream(req.question, req.session_id):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except ValueError as e:
+            yield f"data: {json.dumps({'type': 'error', 'error': str(e)}, ensure_ascii=False)}\n\n"
+        except Exception:
+            logger.exception("chat stream 처리 중 오류 발생")
+            yield f"data: {json.dumps({'type': 'error', 'error': '일시적인 오류가 발생했습니다.'}, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")

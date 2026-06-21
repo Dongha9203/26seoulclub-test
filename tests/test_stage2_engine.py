@@ -696,6 +696,116 @@ class TestPromptBuilder:
         with pytest.raises(ConnectionError):
             call_claude(fake_client, "claude-sonnet-4-6", "시스템프롬프트", "질문")
 
+    def test_call_claude_stream_emits_incremental_deltas_then_done(self):
+        """Anthropic SDK는 tool input을 raw partial_json 텍스트 조각으로 흘려주고,
+        우리가 직접 누적해 "answer" 문자열 값을 부분 파싱합니다(SDK의 InputJsonEvent.
+        snapshot은 jiter partial_mode=True라 닫히지 않은 문자열은 누락시켜 실시간
+        스트리밍에 못 쓴다는 걸 실측으로 확인함). 매 조각마다 새로 늘어난 부분만큼만
+        delta로 떼어내 보내야 합니다(이미 보낸 부분을 중복으로 다시 보내면 안 됨)."""
+        from prompt_builder import call_claude_stream
+
+        class _Event:
+            def __init__(self, partial_json):
+                self.type = "input_json"
+                self.partial_json = partial_json
+
+        class _FakeStream:
+            def __init__(self, events, final_content):
+                self._events = events
+                self._final_message = MagicMock(content=final_content)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def __iter__(self):
+                return iter(self._events)
+
+            def get_final_message(self):
+                return self._final_message
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = "provide_answer"
+        block.input = {"answer": "안녕하세요 반갑습니다", "sentiment_score": 0.0, "resolution_status": "해결됨"}
+
+        events = [
+            _Event('{"answer": "안녕'),
+            _Event('하세요'),
+            _Event(' 반갑습니다", "sentiment_score": 0.0, "resolution_status": "해결됨"}'),
+        ]
+        fake_client = MagicMock()
+        fake_client.messages.stream = MagicMock(return_value=_FakeStream(events, [block]))
+
+        chunks = []
+        final = None
+        for kind, payload in call_claude_stream(fake_client, "claude-sonnet-4-6", "시스템프롬프트", "질문"):
+            if kind == "delta":
+                chunks.append(payload)
+            else:
+                final = payload
+
+        assert "".join(chunks) == "안녕하세요 반갑습니다"
+        assert chunks == ["안녕", "하세요", " 반갑습니다"]
+        assert final == ("안녕하세요 반갑습니다", 0.0, "해결됨")
+
+    def test_call_claude_stream_no_interim_events_emits_full_answer_at_end(self):
+        """중간 delta 없이 스트림이 끝나도(예: 짧은 답변), 최종 tool_use 블록에서
+        한 번에 전체 answer를 delta로 떼어내 보낸 뒤 done을 내보내야 합니다."""
+        from prompt_builder import call_claude_stream
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = "provide_answer"
+        block.input = {"answer": "수당은 매월 말일 지급됩니다.", "sentiment_score": 0.2, "resolution_status": "해결됨"}
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_message(self):
+                return MagicMock(content=[block])
+
+        fake_client = MagicMock()
+        fake_client.messages.stream = MagicMock(return_value=_FakeStream())
+
+        events = list(call_claude_stream(fake_client, "claude-sonnet-4-6", "시스템프롬프트", "질문"))
+        assert events == [
+            ("delta", "수당은 매월 말일 지급됩니다."),
+            ("done", ("수당은 매월 말일 지급됩니다.", 0.2, "해결됨")),
+        ]
+
+    def test_call_claude_stream_missing_tool_use_block_raises(self):
+        from prompt_builder import call_claude_stream
+        text_block = MagicMock(type="text")
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc_info):
+                return False
+
+            def __iter__(self):
+                return iter(())
+
+            def get_final_message(self):
+                return MagicMock(content=[text_block])
+
+        fake_client = MagicMock()
+        fake_client.messages.stream = MagicMock(return_value=_FakeStream())
+
+        with pytest.raises(RuntimeError):
+            list(call_claude_stream(fake_client, "claude-sonnet-4-6", "시스템프롬프트", "질문"))
+
 
 # ══════════════════════════════════════════════════════════════
 # chatbot_engine.py
@@ -746,6 +856,46 @@ class TestFormatOperationTeamContact:
         assert "운영팀" in text
 
 
+class _FakeMessageStream:
+    """anthropic SDK의 client.messages.stream() 컨텍스트 매니저를 모사합니다.
+    중간 delta 이벤트 없이 최종 tool_use 블록만 흘려보내, call_claude_stream()이
+    스트림 종료 후 한 번에 emit하는 폴백 경로를 타게 합니다(기존 messages.create
+    기반 테스트와 결과적으로 동일한 answer/sentiment_score/resolution_status를 얻음)."""
+
+    def __init__(self, content_blocks):
+        self._final_message = MagicMock(content=content_blocks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def __iter__(self):
+        return iter(())
+
+    def get_final_message(self):
+        return self._final_message
+
+
+def _mock_claude_stream(anthropic_client, block):
+    """anthropic_client.messages.stream(...)이 block 하나를 담은 가짜 스트림을
+    반환하도록 설정합니다."""
+    anthropic_client.messages.stream = MagicMock(return_value=_FakeMessageStream([block]))
+
+
+class _FakeMessageStreamWithEvents(_FakeMessageStream):
+    """_FakeMessageStream과 달리 중간 input_json 이벤트도 흘려보낼 수 있어,
+    handle_question_stream()이 실제로 여러 delta로 나눠 보내는지 검증할 때 씁니다."""
+
+    def __init__(self, events, content_blocks):
+        super().__init__(content_blocks)
+        self._events = events
+
+    def __iter__(self):
+        return iter(self._events)
+
+
 class TestChatbotEngine:
     @pytest.fixture
     def config(self):
@@ -786,7 +936,7 @@ class TestChatbotEngine:
         assert response.response_attitude == ResponseAttitude.ESCALATION
         assert response.escalated_to_operation_team is True
         engine._search_engine.search.assert_not_called()
-        engine._anthropic_client.messages.create.assert_not_called()
+        engine._anthropic_client.messages.stream.assert_not_called()
 
     def test_handle_question_search_failure_path(self, engine):
         from failure_analyzer import FailureCause
@@ -798,7 +948,7 @@ class TestChatbotEngine:
         assert response.search_success is False
         assert response.failure_cause == FailureCause.OUT_OF_POLICY
         assert response.escalated_to_operation_team is True
-        engine._anthropic_client.messages.create.assert_not_called()
+        engine._anthropic_client.messages.stream.assert_not_called()
 
     def test_handle_question_low_confidence_with_results_still_calls_claude(self, engine):
         """검색 결과가 있는데 신뢰도(점수)만 threshold 미달인 경우, 코퍼스 정규화
@@ -823,14 +973,14 @@ class TestChatbotEngine:
             "answer": "죄송하지만 관련 내용을 찾지 못했어요.",
             "sentiment_score": 0.0, "resolution_status": "지식DB공백",
         }
-        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+        _mock_claude_stream(engine._anthropic_client, block)
 
         response = engine.handle_question("오늘 서울 날씨 어때요?", "session-13")
 
-        engine._anthropic_client.messages.create.assert_called_once()
+        engine._anthropic_client.messages.stream.assert_called_once()
         from failure_analyzer import FailureCause
         assert response.failure_cause == FailureCause.KNOWLEDGE_GAP
-        system_prompt = engine._anthropic_client.messages.create.call_args.kwargs["system"]
+        system_prompt = engine._anthropic_client.messages.stream.call_args.kwargs["system"]
         assert "02-0000-0000" in system_prompt  # low_confidence라 운영팀 연락처가 프롬프트에 포함됨
 
     def test_handle_question_claude_api_failure_escalates_and_logs(self, engine, pg_conn):
@@ -847,7 +997,7 @@ class TestChatbotEngine:
         )]
         engine._search_engine.search.return_value = results
         engine._search_engine.is_confident.return_value = True
-        engine._anthropic_client.messages.create.side_effect = ConnectionError("anthropic api down")
+        engine._anthropic_client.messages.stream = MagicMock(side_effect=ConnectionError("anthropic api down"))
 
         response = engine.handle_question("동아리 가입 어떻게 하나요?", "session-api-fail")
 
@@ -880,7 +1030,7 @@ class TestChatbotEngine:
         block.name = "provide_answer"
         block.input = {"answer": "수당은 매월 말일 지급됩니다. (자세한 내용: [수당 지급 기준 바로가기])",
                        "sentiment_score": 0.1, "resolution_status": "해결됨"}
-        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+        _mock_claude_stream(engine._anthropic_client, block)
 
         response = engine.handle_question("수당 언제 들어와요?", "session-3")
 
@@ -890,6 +1040,51 @@ class TestChatbotEngine:
         assert response.failure_cause is None
         assert response.deep_link == "https://notion.so/abc#12345678123412341234123456789abc"
         assert response.escalated_to_operation_team is False
+
+    def test_handle_question_stream_emits_deltas_then_done_matching_handle_question(self, engine):
+        """handle_question_stream()이 handle_question()과 같은 분기/로깅을 거치되,
+        답변을 delta로 나눠 내보내고 마지막에 done으로 최종 answer/deep_link를
+        한 번만 내보내는지 확인합니다."""
+        from hybrid_search import SearchResult
+
+        results = [SearchResult(
+            doc_id="d1", title="수당 지급 기준", content="활동 수당은 매월 말일 지급됩니다.",
+            category="수당 지급 기준 안내", source_type="notion",
+            notion_block_id="12345678-1234-1234-1234-123456789abc",
+            notion_page_url="https://notion.so/abc", vector_score=0.8, bm25_score=0.8,
+            combined_score=0.8,
+        )]
+        engine._search_engine.search.return_value = results
+        engine._search_engine.is_confident.return_value = True
+
+        class _Event:
+            def __init__(self, partial_json):
+                self.type = "input_json"
+                self.partial_json = partial_json
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = "provide_answer"
+        block.input = {"answer": "수당은 매월 말일 지급됩니다.",
+                       "sentiment_score": 0.1, "resolution_status": "해결됨"}
+        engine._anthropic_client.messages.stream = MagicMock(
+            return_value=_FakeMessageStreamWithEvents(
+                [
+                    _Event('{"answer": "수당은'),
+                    _Event(' 매월 말일 지급됩니다.", "sentiment_score": 0.1, "resolution_status": "해결됨"}'),
+                ],
+                [block],
+            )
+        )
+
+        events = list(engine.handle_question_stream("수당 언제 들어와요?", "session-stream-1"))
+
+        deltas = [e["text"] for e in events if e["type"] == "delta"]
+        done_events = [e for e in events if e["type"] == "done"]
+        assert len(done_events) == 1
+        assert "".join(deltas) == "수당은 매월 말일 지급됩니다."
+        assert done_events[0]["answer"] == "수당은 매월 말일 지급됩니다."
+        assert done_events[0]["deep_link"] == "https://notion.so/abc#12345678123412341234123456789abc"
 
     def test_handle_question_high_confidence_still_passes_real_contact_to_prompt(self, engine):
         """검색 신뢰도가 높아도 매칭된 문서 안에 오래된 연락처가 적혀 있을 수 있으므로,
@@ -912,11 +1107,11 @@ class TestChatbotEngine:
         block.name = "provide_answer"
         block.input = {"answer": "공휴일에는 근무자가 없습니다.",
                        "sentiment_score": 0.0, "resolution_status": "해결됨"}
-        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+        _mock_claude_stream(engine._anthropic_client, block)
 
         engine.handle_question("공휴일에 근무자 없어?", "session-holiday")
 
-        system_prompt = engine._anthropic_client.messages.create.call_args.kwargs["system"]
+        system_prompt = engine._anthropic_client.messages.stream.call_args.kwargs["system"]
         assert "02-0000-0000" in system_prompt
 
     def test_handle_question_claude_reports_unresolved_sets_failure_cause(self, engine):
@@ -943,7 +1138,7 @@ class TestChatbotEngine:
             "answer": "죄송하지만 저는 동아리ON 운영 관련 문의만 도와드릴 수 있어요.",
             "sentiment_score": 0.0, "resolution_status": "정책밖요청",
         }
-        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+        _mock_claude_stream(engine._anthropic_client, block)
 
         response = engine.handle_question("오늘 서울 날씨 어때요?", "session-11")
 
@@ -965,7 +1160,7 @@ class TestChatbotEngine:
         assert "다시 한번" in response.answer
         assert "운영팀" not in response.answer
         engine._search_engine.search.assert_not_called()
-        engine._anthropic_client.messages.create.assert_not_called()
+        engine._anthropic_client.messages.stream.assert_not_called()
 
     def test_handle_question_bare_light_verb_question_is_also_ambiguous(self, engine):
         """'있나요?'처럼 의미 없는 경동사("있다") 하나만 있는 질문도 실질적인
@@ -977,7 +1172,7 @@ class TestChatbotEngine:
 
         assert response.failure_cause == FailureCause.QUESTION_AMBIGUITY
         engine._search_engine.search.assert_not_called()
-        engine._anthropic_client.messages.create.assert_not_called()
+        engine._anthropic_client.messages.stream.assert_not_called()
 
     def test_handle_question_known_ambiguous_phrases_batch(self, engine):
         """실제 챗봇에 던져 모호성 판정이 정상 동작함을 확인했던 질문 묶음을
@@ -993,7 +1188,7 @@ class TestChatbotEngine:
             response = engine.handle_question(phrase, f"session-amb-batch-{i}")
             assert response.failure_cause == FailureCause.QUESTION_AMBIGUITY, phrase
         engine._search_engine.search.assert_not_called()
-        engine._anthropic_client.messages.create.assert_not_called()
+        engine._anthropic_client.messages.stream.assert_not_called()
 
     def test_handle_question_search_failure_answer_contains_operation_team_contact(self, engine):
         engine._search_engine.search.return_value = []
@@ -1031,7 +1226,7 @@ class TestChatbotEngine:
         assert response.escalated_to_operation_team is True
         assert "02-0000-0000" in response.answer
         assert "ops@test.com" in response.answer
-        engine._anthropic_client.messages.create.assert_not_called()
+        engine._anthropic_client.messages.stream.assert_not_called()
 
     def test_handle_question_info_gap_passes_real_contact_into_prompt(self, engine):
         from hybrid_search import SearchResult
@@ -1052,7 +1247,7 @@ class TestChatbotEngine:
         block.name = "provide_answer"
         block.input = {"answer": "해당 내용은 안내 자료에 없어 운영팀 문의가 필요합니다.",
                        "sentiment_score": 0.0, "resolution_status": "검색실패"}
-        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+        _mock_claude_stream(engine._anthropic_client, block)
 
         # 질문 카테고리(수당 지급 기준 안내)와 검색결과 카테고리(출결 및 활동기준 안내)를
         # 불일치시켜 INFO_GAP으로 분류되게 함
@@ -1061,7 +1256,7 @@ class TestChatbotEngine:
         assert response.situation == Situation.INFO_GAP
         from failure_analyzer import FailureCause
         assert response.failure_cause == FailureCause.SEARCH_FAILURE
-        system_prompt = engine._anthropic_client.messages.create.call_args.kwargs["system"]
+        system_prompt = engine._anthropic_client.messages.stream.call_args.kwargs["system"]
         assert "02-0000-0000" in system_prompt
         assert "ops@test.com" in system_prompt
         assert "지어내지" in system_prompt
@@ -1098,7 +1293,7 @@ class TestChatbotEngine:
                                  0.8, 0.8, 0.8)]
         engine._search_engine.search.return_value = results
         engine._search_engine.is_confident.return_value = True
-        engine._anthropic_client.messages.create.side_effect = ConnectionError("api down")
+        engine._anthropic_client.messages.stream = MagicMock(side_effect=ConnectionError("api down"))
 
         response = engine.handle_question("수당 지급 기준이 뭐예요?", "session-6")
 

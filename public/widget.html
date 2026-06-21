@@ -69,7 +69,7 @@
 </div>
 
 <script>
-const API_URL = "/api/chat";
+const STREAM_API_URL = "/api/chat/stream";
 const SESSION_KEY = "donghoiOnSessionId";
 
 function getSessionId() {
@@ -96,15 +96,13 @@ function appendBubble(text, kind) {
 
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
 
-function appendBotAnswer(answer) {
-  const el = document.createElement("div");
-  el.className = "bubble bot";
-
+function renderBotBubble(el, text) {
+  el.textContent = "";
   let lastIndex = 0;
   let match;
-  while ((match = MARKDOWN_LINK_RE.exec(answer)) !== null) {
+  while ((match = MARKDOWN_LINK_RE.exec(text)) !== null) {
     if (match.index > lastIndex) {
-      el.appendChild(document.createTextNode(answer.slice(lastIndex, match.index)));
+      el.appendChild(document.createTextNode(text.slice(lastIndex, match.index)));
     }
     const a = document.createElement("a");
     a.href = match[2];
@@ -114,12 +112,9 @@ function appendBotAnswer(answer) {
     el.appendChild(a);
     lastIndex = match.index + match[0].length;
   }
-  if (lastIndex < answer.length) {
-    el.appendChild(document.createTextNode(answer.slice(lastIndex)));
+  if (lastIndex < text.length) {
+    el.appendChild(document.createTextNode(text.slice(lastIndex)));
   }
-
-  messagesEl.appendChild(el);
-  messagesEl.scrollTop = messagesEl.scrollHeight;
 }
 
 async function sendQuestion() {
@@ -129,27 +124,69 @@ async function sendQuestion() {
   appendBubble(question, "user");
   inputEl.value = "";
   sendButton.disabled = true;
-  const typingEl = appendBubble("답변 작성 중...", "bot");
+  let typingEl = appendBubble("답변 작성 중...", "bot");
   typingEl.classList.add("typing");
 
+  let botEl = null;
+  let buffer = "";
+
+  function ensureBotBubble() {
+    if (typingEl) {
+      typingEl.remove();
+      typingEl = null;
+    }
+    if (!botEl) {
+      botEl = document.createElement("div");
+      botEl.className = "bubble bot";
+      messagesEl.appendChild(botEl);
+    }
+  }
+
   try {
-    const res = await fetch(API_URL, {
+    const res = await fetch(STREAM_API_URL, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ question: question, session_id: getSessionId() }),
     });
-    const data = await res.json().catch(() => ({}));
-    typingEl.remove();
 
-    if (res.ok) {
-      appendBotAnswer(data.answer);
-    } else if (res.status === 429) {
-      appendBubble(data.error || "잠시 후 다시 시도해주세요.", "error");
-    } else {
-      appendBubble(data.error || "오류가 발생했습니다. 다시 시도해주세요.", "error");
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      if (typingEl) { typingEl.remove(); typingEl = null; }
+      const fallback = res.status === 429 ? "잠시 후 다시 시도해주세요." : "오류가 발생했습니다. 다시 시도해주세요.";
+      appendBubble(data.error || fallback, "error");
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder("utf-8");
+    let sseBuffer = "";
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      sseBuffer += decoder.decode(value, { stream: true });
+
+      const parts = sseBuffer.split("\n\n");
+      sseBuffer = parts.pop();
+
+      for (const part of parts) {
+        const line = part.trim();
+        if (!line.startsWith("data:")) continue;
+        const event = JSON.parse(line.slice(5).trim());
+
+        if (event.type === "delta") {
+          ensureBotBubble();
+          buffer += event.text;
+          renderBotBubble(botEl, buffer);
+          messagesEl.scrollTop = messagesEl.scrollHeight;
+        } else if (event.type === "error") {
+          if (typingEl) { typingEl.remove(); typingEl = null; }
+          appendBubble(event.error || "오류가 발생했습니다. 다시 시도해주세요.", "error");
+        }
+      }
     }
   } catch (e) {
-    typingEl.remove();
+    if (typingEl) typingEl.remove();
     appendBubble("네트워크 오류가 발생했습니다. 다시 시도해주세요.", "error");
   } finally {
     sendButton.disabled = false;

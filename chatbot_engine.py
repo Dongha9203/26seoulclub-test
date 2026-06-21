@@ -34,7 +34,7 @@ from failure_analyzer import FailureAnalysisInput, FailureCause, analyze_failure
 from hybrid_search import HybridSearchEngine
 from embedding_manager import get_embedding_provider
 from morpheme_analyzer import analyze
-from prompt_builder import build_system_prompt, call_claude, get_anthropic_client
+from prompt_builder import build_system_prompt, call_claude_stream, get_anthropic_client
 from storage.supabase_store import get_recent_qa_logs, insert_qa_log
 from tone_matrix import (
     SITUATION_TO_ATTITUDE,
@@ -166,6 +166,36 @@ class ChatbotEngine:
     # 메인 엔트리포인트
     # ------------------------------------------------------------------
     def handle_question(self, question: str, session_id: str) -> ChatbotResponse:
+        """질문을 처리해 최종 ChatbotResponse를 한 번에 반환합니다.
+
+        내부적으로 _handle_question_events()의 "done" 이벤트만 받아오는 얇은
+        래퍼입니다 — 스트리밍 여부와 무관하게 분기/로깅 로직은 한 곳에만 존재합니다.
+        """
+        for kind, payload in self._handle_question_events(question, session_id):
+            if kind == "done":
+                return payload
+        raise RuntimeError("핸들러가 최종 응답을 생성하지 못했습니다.")
+
+    def handle_question_stream(self, question: str, session_id: str):
+        """handle_question()의 스트리밍 버전.
+
+        답변 텍스트가 생성되는 대로 {"type": "delta", "text": ...}를 여러 번 yield하고,
+        마지막에 {"type": "done", "answer": ..., "deep_link": ...}를 한 번 yield합니다.
+        """
+        for kind, payload in self._handle_question_events(question, session_id):
+            if kind == "delta":
+                yield {"type": "delta", "text": payload}
+            else:
+                yield {"type": "done", "answer": payload.answer, "deep_link": payload.deep_link}
+
+    def _handle_question_events(self, question: str, session_id: str):
+        """handle_question()/handle_question_stream()이 공유하는 실제 처리 흐름.
+
+        ("delta", 텍스트조각)을 0회 이상, 그리고 마지막에 ("done", ChatbotResponse)를
+        정확히 1회 yield합니다. 고정 템플릿 분기는 답변 전체를 delta 1건으로 한 번에
+        내보내고, Claude를 직접 호출하는 분기만 실제로 여러 delta로 나눠 내보냅니다 —
+        클라이언트는 두 경우를 구분할 필요 없이 delta를 누적하기만 하면 됩니다.
+        """
         if not question or not question.strip():
             raise ValueError("질문이 비어있습니다.")
 
@@ -179,6 +209,7 @@ class ChatbotEngine:
                 "불편을 드려 죄송합니다. 보다 정확한 안내를 위해 아래 운영팀으로 "
                 "직접 문의해 주세요.\n\n" + _format_operation_team_contact(self._config)
             )
+            yield ("delta", answer)
             response = ChatbotResponse(
                 answer=answer,
                 situation=Situation.EMOTIONAL_ESCALATION,
@@ -202,7 +233,8 @@ class ChatbotEngine:
                 "matched_doc_ids": [], "deep_link": None,
                 "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
             })
-            return response
+            yield ("done", response)
+            return
 
         analysis = analyze(question)
         keywords, category = analysis["keywords"], analysis["category"]
@@ -218,6 +250,7 @@ class ChatbotEngine:
             # 줄 위험이 있으므로(예: 무관한 문서 내용을 끌어다 쓰는 것), 운영팀 안내
             # 대신 사용자가 질문을 구체화하도록 유도합니다.
             answer = "죄송합니다, 질문 내용이 정확하지 않아 답변하기 어려워요. 질문하신 내용을 좀 더 구체적으로 다시 한번 말씀해 주시겠어요?"
+            yield ("delta", answer)
             response = ChatbotResponse(
                 answer=answer, situation=None, response_attitude=None,
                 failure_cause=FailureCause.QUESTION_AMBIGUITY, sentiment_score=None, search_success=False,
@@ -234,7 +267,8 @@ class ChatbotEngine:
                 "matched_doc_ids": [], "deep_link": None,
                 "escalated_to_operation_team": False, "latency_ms": _elapsed_ms(start),
             })
-            return response
+            yield ("done", response)
+            return
 
         # ── step: 하이브리드 검색 ─────────────────────────────────────────
         results = self._search_engine.search(question, self._conn)
@@ -253,6 +287,7 @@ class ChatbotEngine:
                 "아래 운영팀으로 직접 문의해 주시면 빠르게 도와드릴게요.\n\n"
                 + _format_operation_team_contact(self._config)
             )
+            yield ("delta", answer)
             response = ChatbotResponse(
                 answer=answer, situation=None, response_attitude=None,
                 failure_cause=cause, sentiment_score=None, search_success=False,
@@ -269,7 +304,8 @@ class ChatbotEngine:
                 "matched_doc_ids": [], "deep_link": None,
                 "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
             })
-            return response
+            yield ("done", response)
+            return
 
         # 검색 신뢰도 점수는 코퍼스가 작을 때 질문 관련성과 무관하게 통과되는
         # 경우가 있어(실제 발견된 한계) 더 이상 차단 기준으로 쓰지 않습니다.
@@ -290,6 +326,7 @@ class ChatbotEngine:
                 "네, 직접 상담을 도와드릴게요. 아래 운영팀 연락처로 문의해 주시면 "
                 "담당자가 안내해 드립니다.\n\n" + _format_operation_team_contact(self._config)
             )
+            yield ("delta", answer)
             response = ChatbotResponse(
                 answer=answer, situation=situation, response_attitude=ResponseAttitude.ESCALATION,
                 failure_cause=None, sentiment_score=None, search_success=True,
@@ -307,7 +344,8 @@ class ChatbotEngine:
                 "matched_doc_ids": [], "deep_link": None,
                 "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
             })
-            return response
+            yield ("done", response)
+            return
 
         attitude = SITUATION_TO_ATTITUDE[situation]
 
@@ -321,9 +359,14 @@ class ChatbotEngine:
         operation_team_contact = _format_operation_team_contact(self._config)
         system_prompt = build_system_prompt(tone_instruction, results, low_confidence, operation_team_contact)
         try:
-            answer, sentiment_score, resolution_status = call_claude(
+            answer = sentiment_score = resolution_status = None
+            for kind, payload in call_claude_stream(
                 self._anthropic_client, self._llm_model, system_prompt, question
-            )
+            ):
+                if kind == "delta":
+                    yield ("delta", payload)
+                else:
+                    answer, sentiment_score, resolution_status = payload
         except Exception:
             # Claude API 자체가 실패한 경우(레이트리밋/네트워크 오류 등)는 검색/분류와는
             # 무관한 별개 원인이므로, 운영팀 폴백으로 응답하면서도 failure_cause를 남겨
@@ -334,6 +377,7 @@ class ChatbotEngine:
                 "죄송합니다, 일시적으로 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주시거나, "
                 "급하신 경우 아래 운영팀으로 문의해 주세요.\n\n" + _format_operation_team_contact(self._config)
             )
+            yield ("delta", answer)
             response = ChatbotResponse(
                 answer=answer, situation=None, response_attitude=None,
                 failure_cause=FailureCause.API_ERROR, sentiment_score=None, search_success=False,
@@ -351,7 +395,8 @@ class ChatbotEngine:
                 "matched_doc_ids": [], "deep_link": None,
                 "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
             })
-            return response
+            yield ("done", response)
+            return
 
         matched_doc_ids = [r.doc_id for r in results]
 
@@ -387,4 +432,4 @@ class ChatbotEngine:
             "deep_link": deep_link, "escalated_to_operation_team": not resolved,
             "latency_ms": _elapsed_ms(start),
         })
-        return response
+        yield ("done", response)
