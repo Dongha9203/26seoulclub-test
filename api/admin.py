@@ -330,32 +330,45 @@ def embed_all_documents(operator_email: str = Depends(get_current_operator)):
 
     구글 스프레드시트처럼 한 번 업로드로 문서가 수백~수천 건 생기는 경우, 문서 1건당
     '갱신' 버튼을 일일이 누르는 게 비현실적이라 일괄 처리 경로가 필요합니다.
-    노션 소스는 대상에서 제외합니다 (단일 문서 갱신과 동일한 제약 — '지금 갱신' 사용)."""
-    from storage.supabase_store import get_documents_missing_embedding, update_embedding
+    노션 소스는 대상에서 제외합니다 (단일 문서 갱신과 동일한 제약 — '지금 갱신' 사용).
+
+    구글시트 업로드처럼 문서가 수백~수천 건일 수 있어, 문서 1건당 DB에 새로
+    왕복(round trip)하면 Vercel↔Supabase 간 리전 지연이 누적돼 함수 실행 제한
+    시간을 넘길 수 있습니다. 커넥션을 한 번만 열어 재사용하고, 임베딩 쓰기도
+    문서별 update_embedding 대신 배치당 1왕복인 update_embeddings_batch로
+    처리합니다 (노션 동기화에 적용한 것과 동일한 수정)."""
+    from storage.supabase_store import (
+        get_connection, get_documents_missing_embedding, update_embeddings_batch,
+    )
     from embedding_manager import get_embedding_provider
 
     config = _load_static_config()
     model = config.get("embedding_model")
-    docs = [d for d in get_documents_missing_embedding(model) if d.is_editable]
 
-    if not docs:
-        return {"status": "ok", "embedded": 0, "failed": 0}
+    conn = get_connection()
+    try:
+        docs = [d for d in get_documents_missing_embedding(model, conn=conn) if d.is_editable]
 
-    provider = get_embedding_provider(config)
-    embedded, failed = 0, 0
-    batch_size = 100
-    for start in range(0, len(docs), batch_size):
-        batch = docs[start:start + batch_size]
-        texts = [d.title + " " + d.content for d in batch]
-        try:
-            embeddings = provider.embed_documents(texts)
-        except Exception:
-            logger.exception("일괄 임베딩 배치 실패 (start=%d)", start)
-            failed += len(batch)
-            continue
-        for doc, embedding in zip(batch, embeddings):
-            update_embedding(doc.doc_id, embedding, model)
-            embedded += 1
+        if not docs:
+            return {"status": "ok", "embedded": 0, "failed": 0}
+
+        provider = get_embedding_provider(config)
+        embedded, failed = 0, 0
+        batch_size = 100
+        for start in range(0, len(docs), batch_size):
+            batch = docs[start:start + batch_size]
+            texts = [d.title + " " + d.content for d in batch]
+            try:
+                embeddings = provider.embed_documents(texts)
+            except Exception:
+                logger.exception("일괄 임베딩 배치 실패 (start=%d)", start)
+                failed += len(batch)
+                continue
+            items = [(doc.doc_id, embedding) for doc, embedding in zip(batch, embeddings)]
+            update_embeddings_batch(items, model, conn=conn)
+            embedded += len(items)
+    finally:
+        conn.close()
 
     return {"status": "ok", "embedded": embedded, "failed": failed}
 

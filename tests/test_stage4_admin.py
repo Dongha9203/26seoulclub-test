@@ -729,7 +729,8 @@ class TestAdminApi:
         assert res.json()["inserted"] >= 1
 
     def test_embed_all_no_pending_documents_returns_zero(self, client, operator):
-        with patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
             res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
         assert res.status_code == 200
         assert res.json() == {"status": "ok", "embedded": 0, "failed": 0}
@@ -739,7 +740,8 @@ class TestAdminApi:
         notion_doc = Document.new(source_type="notion", source_origin="FAQ", title="T",
                                    content="C", notion_block_id="abc", is_editable=False)
         fake_provider = MagicMock()
-        with patch("storage.supabase_store.get_documents_missing_embedding",
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding",
                    return_value=[notion_doc]), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider):
             res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
@@ -753,14 +755,15 @@ class TestAdminApi:
                             content="답변1")
         fake_provider = MagicMock()
         fake_provider.embed_documents.return_value = [[0.1, 0.2]]
-        with patch("storage.supabase_store.get_documents_missing_embedding",
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding",
                    return_value=[doc]), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
-             patch("storage.supabase_store.update_embedding") as fake_update:
+             patch("storage.supabase_store.update_embeddings_batch") as fake_update:
             res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
         assert res.status_code == 200
         assert res.json() == {"status": "ok", "embedded": 1, "failed": 0}
-        fake_update.assert_called_once()
+        fake_update.assert_called_once_with([(doc.doc_id, [0.1, 0.2])], ANY, conn=ANY)
 
     def test_embed_all_batch_failure_counts_as_failed_without_crashing(self, client, operator):
         from models.document import Document
@@ -768,10 +771,11 @@ class TestAdminApi:
                             content="답변1")
         fake_provider = MagicMock()
         fake_provider.embed_documents.side_effect = ConnectionError("voyage api down")
-        with patch("storage.supabase_store.get_documents_missing_embedding",
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding",
                    return_value=[doc]), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
-             patch("storage.supabase_store.update_embedding") as fake_update:
+             patch("storage.supabase_store.update_embeddings_batch") as fake_update:
             res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
         assert res.status_code == 200
         assert res.json() == {"status": "ok", "embedded": 0, "failed": 1}
