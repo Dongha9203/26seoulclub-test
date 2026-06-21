@@ -36,6 +36,12 @@
   .bubble.error { background: #fff1f0; color: #c0392b; }
   .bubble a { color: inherit; text-decoration: underline; }
   .bubble.bot a { color: #2563eb; }
+  #hint-banner {
+    margin: 0 12px 10px; padding: 10px 14px; border-radius: 10px;
+    background: linear-gradient(135deg, #ffb347, #ff7a59);
+    color: #fff; font-size: 13px; font-weight: 600; line-height: 1.4;
+    box-shadow: 0 2px 6px rgba(255, 122, 89, 0.4);
+  }
   #input-row {
     display: flex; gap: 8px; padding: 12px; border-top: 1px solid #eee;
   }
@@ -55,6 +61,7 @@
 <div id="app">
   <div id="header">동아리ON 챗봇</div>
   <div id="messages"></div>
+  <div id="hint-banner">💡 질문을 구체적으로 적어주시면 더 정확하게 답변드릴 수 있어요 😊</div>
   <div id="input-row">
     <textarea id="question-input" rows="1" placeholder="궁금한 점을 입력해주세요"></textarea>
     <button id="send-button">전송</button>
