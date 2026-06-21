@@ -6,11 +6,12 @@
 분리해두면 "이 파일의 모든 라우트는 인증 필수"라는 불변식을 지키기 쉽습니다.
 """
 
+import calendar
 import json
 import logging
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -36,6 +37,47 @@ _static_config: Optional[dict] = None
 _INCOMPLETE_CAUSES = ["검색실패", "질문모호성"]
 _UNRESOLVED_CAUSES = ["지식DB공백", "정책밖요청"]
 _MANUAL_SYNC_KEY = "_manual_sync_all"
+
+# 화면별 기간별 조회조건의 최대 조회 기간(개월). 예상되는 데이터 양에 맞춰 화면마다 다르게 정함.
+_DATE_RANGE_MAX_MONTHS = {
+    "daily-counts": 3,
+    "qa-logs": 1,
+    "incomplete": 3,
+    "unresolved": 3,
+    "failure-report": 12,
+}
+
+
+def _add_months(d: date, months: int) -> date:
+    """말일 overflow를 처리하며 d에 개월 수를 더합니다 (예: 1/31 + 1개월 = 2/28)."""
+    month_index = d.month - 1 + months
+    year = d.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(d.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _validate_date_range(
+    start_date: Optional[str], end_date: Optional[str], max_months: int, screen_label: str,
+) -> tuple:
+    """기간별 조회조건을 검증합니다. 필터가 없으면 (None, None)을 반환해 기존 동작(전체 조회)을 유지합니다."""
+    if start_date is None and end_date is None:
+        return None, None
+    if start_date is None or end_date is None:
+        raise HTTPException(status_code=400, detail="조회 기간은 시작일과 종료일을 모두 입력해야 합니다.")
+    try:
+        start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="날짜 형식이 올바르지 않습니다 (YYYY-MM-DD).")
+    if start > end:
+        raise HTTPException(status_code=400, detail="시작일은 종료일보다 늦을 수 없습니다.")
+    if end > _add_months(start, max_months):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{screen_label}은 최대 {max_months}개월까지 조회할 수 있습니다.",
+        )
+    return start_date, end_date
 
 
 def _load_static_config() -> dict:
@@ -99,23 +141,31 @@ def change_password(req: ChangePasswordRequest, operator_email: str = Depends(ge
 # ──────────────────────────────────────────────────────────────────
 
 @app.get("/monitoring/daily-counts")
-def daily_counts(limit: int = 30, offset: int = 0, operator_email: str = Depends(get_current_operator)):
+def daily_counts(limit: int = 30, offset: int = 0, start_date: Optional[str] = None,
+                  end_date: Optional[str] = None, operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_daily_qa_counts
     if limit <= 0 or limit > 200:
         raise HTTPException(status_code=400, detail="limit은 1~200 사이여야 합니다.")
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset은 0 이상이어야 합니다.")
-    return {"daily_counts": get_daily_qa_counts(limit, offset)}
+    start_date, end_date = _validate_date_range(
+        start_date, end_date, _DATE_RANGE_MAX_MONTHS["daily-counts"], "일별 질의/응답 건수",
+    )
+    return {"daily_counts": get_daily_qa_counts(limit, offset, start_date, end_date)}
 
 
 @app.get("/monitoring/qa-logs")
-def qa_logs(limit: int = 50, offset: int = 0, operator_email: str = Depends(get_current_operator)):
+def qa_logs(limit: int = 50, offset: int = 0, start_date: Optional[str] = None,
+            end_date: Optional[str] = None, operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_qa_logs_paginated
     if limit <= 0 or limit > 200:
         raise HTTPException(status_code=400, detail="limit은 1~200 사이여야 합니다.")
     if offset < 0:
         raise HTTPException(status_code=400, detail="offset은 0 이상이어야 합니다.")
-    return {"logs": get_qa_logs_paginated(limit, offset)}
+    start_date, end_date = _validate_date_range(
+        start_date, end_date, _DATE_RANGE_MAX_MONTHS["qa-logs"], "질의-답변 연계조회",
+    )
+    return {"logs": get_qa_logs_paginated(limit, offset, start_date, end_date)}
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -123,17 +173,25 @@ def qa_logs(limit: int = 50, offset: int = 0, operator_email: str = Depends(get_
 # ──────────────────────────────────────────────────────────────────
 
 @app.get("/actions/incomplete")
-def incomplete_answers(limit: int = 50, offset: int = 0,
+def incomplete_answers(limit: int = 50, offset: int = 0, start_date: Optional[str] = None,
+                        end_date: Optional[str] = None,
                         operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_logs_by_failure_causes
-    return {"logs": get_logs_by_failure_causes(_INCOMPLETE_CAUSES, limit, offset)}
+    start_date, end_date = _validate_date_range(
+        start_date, end_date, _DATE_RANGE_MAX_MONTHS["incomplete"], "불완전 답변조회",
+    )
+    return {"logs": get_logs_by_failure_causes(_INCOMPLETE_CAUSES, limit, offset, start_date, end_date)}
 
 
 @app.get("/actions/unresolved")
-def unresolved_answers(limit: int = 50, offset: int = 0,
+def unresolved_answers(limit: int = 50, offset: int = 0, start_date: Optional[str] = None,
+                        end_date: Optional[str] = None,
                         operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_logs_by_failure_causes
-    return {"logs": get_logs_by_failure_causes(_UNRESOLVED_CAUSES, limit, offset)}
+    start_date, end_date = _validate_date_range(
+        start_date, end_date, _DATE_RANGE_MAX_MONTHS["unresolved"], "미해결 답변조회",
+    )
+    return {"logs": get_logs_by_failure_causes(_UNRESOLVED_CAUSES, limit, offset, start_date, end_date)}
 
 
 @app.delete("/actions/{log_id}")
@@ -151,9 +209,13 @@ def resolve_action(log_id: str, operator_email: str = Depends(get_current_operat
 
 
 @app.get("/actions/failure-report")
-def failure_report(operator_email: str = Depends(get_current_operator)):
+def failure_report(start_date: Optional[str] = None, end_date: Optional[str] = None,
+                    operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_failure_cause_counts
-    counts = get_failure_cause_counts()
+    start_date, end_date = _validate_date_range(
+        start_date, end_date, _DATE_RANGE_MAX_MONTHS["failure-report"], "원인별 집계 리포트",
+    )
+    counts = get_failure_cause_counts(start_date, end_date)
     full = {cause: counts.get(cause, 0)
             for cause in ["지식DB공백", "검색실패", "질문모호성", "정책밖요청", "API오류"]}
     return {"counts": full}

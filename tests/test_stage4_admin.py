@@ -6,7 +6,7 @@ import io
 import json
 import sys
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
@@ -274,7 +274,7 @@ class TestQaLogAggregation:
     def test_get_daily_qa_counts(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_daily_qa_counts
         insert_qa_log(_make_log_entry(), pg_conn)
-        counts = get_daily_qa_counts(30, 0, pg_conn)
+        counts = get_daily_qa_counts(30, 0, conn=pg_conn)
         assert sum(c["count"] for c in counts) >= 1
 
     def test_get_daily_qa_counts_empty(self):
@@ -285,19 +285,19 @@ class TestQaLogAggregation:
         mock_cursor.fetchall.return_value = []
         mock_conn = MagicMock()
         mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
-        assert get_daily_qa_counts(30, 0, mock_conn) == []
+        assert get_daily_qa_counts(30, 0, conn=mock_conn) == []
 
     def test_get_daily_qa_counts_pagination(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_daily_qa_counts
         insert_qa_log(_make_log_entry(), pg_conn)
-        page1 = get_daily_qa_counts(1, 0, pg_conn)
+        page1 = get_daily_qa_counts(1, 0, conn=pg_conn)
         assert len(page1) == 1
 
     def test_get_qa_logs_paginated(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_qa_logs_paginated
         for _ in range(3):
             insert_qa_log(_make_log_entry(), pg_conn)
-        page1 = get_qa_logs_paginated(2, 0, pg_conn)
+        page1 = get_qa_logs_paginated(2, 0, conn=pg_conn)
         assert len(page1) == 2
 
     def test_get_logs_by_failure_causes_filters_correctly(self, pg_conn):
@@ -357,8 +357,90 @@ class TestQaLogAggregation:
     def test_get_failure_cause_counts(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_failure_cause_counts
         insert_qa_log(_make_log_entry(failure_cause="정책밖요청"), pg_conn)
-        counts = get_failure_cause_counts(pg_conn)
+        counts = get_failure_cause_counts(conn=pg_conn)
         assert counts["정책밖요청"] == 1
+
+    # ── 기간별 조회조건 (날짜 범위 필터, KST 기준) ──────────────────
+
+    def _mock_conn_capturing_sql(self):
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        return mock_conn, mock_cursor
+
+    def test_get_daily_qa_counts_date_filter_builds_kst_where_clause(self):
+        from storage.supabase_store import get_daily_qa_counts
+        mock_conn, mock_cursor = self._mock_conn_capturing_sql()
+        get_daily_qa_counts(30, 0, start_date="2026-06-01", end_date="2026-06-21", conn=mock_conn)
+        sql, params = mock_cursor.execute.call_args.args
+        assert "Asia/Seoul" in sql
+        assert "BETWEEN %s AND %s" in sql
+        assert params == ("2026-06-01", "2026-06-21", 30, 0)
+
+    def test_get_daily_qa_counts_no_filter_omits_where_clause(self):
+        from storage.supabase_store import get_daily_qa_counts
+        mock_conn, mock_cursor = self._mock_conn_capturing_sql()
+        get_daily_qa_counts(30, 0, conn=mock_conn)
+        sql, params = mock_cursor.execute.call_args.args
+        assert "WHERE" not in sql
+        assert params == (30, 0)
+
+    def test_get_qa_logs_paginated_date_filter_builds_kst_where_clause(self):
+        from storage.supabase_store import get_qa_logs_paginated
+        mock_conn, mock_cursor = self._mock_conn_capturing_sql()
+        get_qa_logs_paginated(50, 0, start_date="2026-06-01", end_date="2026-06-21", conn=mock_conn)
+        sql, params = mock_cursor.execute.call_args.args
+        assert "Asia/Seoul" in sql
+        assert params == ("2026-06-01", "2026-06-21", 50, 0)
+
+    def test_get_logs_by_failure_causes_date_filter_builds_kst_where_clause(self):
+        from storage.supabase_store import get_logs_by_failure_causes
+        mock_conn, mock_cursor = self._mock_conn_capturing_sql()
+        get_logs_by_failure_causes(
+            ["검색실패"], limit=50, offset=0, start_date="2026-06-01", end_date="2026-06-21", conn=mock_conn,
+        )
+        sql, params = mock_cursor.execute.call_args.args
+        assert "Asia/Seoul" in sql
+        assert params == (["검색실패"], "2026-06-01", "2026-06-21", 50, 0)
+
+    def test_get_failure_cause_counts_date_filter_builds_kst_where_clause(self):
+        from storage.supabase_store import get_failure_cause_counts
+        mock_conn, mock_cursor = self._mock_conn_capturing_sql()
+        get_failure_cause_counts(start_date="2026-06-01", end_date="2026-06-21", conn=mock_conn)
+        sql, params = mock_cursor.execute.call_args.args
+        assert "Asia/Seoul" in sql
+        assert list(params) == ["2026-06-01", "2026-06-21"]
+
+    def test_get_qa_logs_paginated_date_filter_excludes_out_of_range_real_rows(self, pg_conn):
+        """실제 DB로 날짜 범위 필터가 진짜로 행을 걸러내는지 확인합니다. 절대 건수가
+        아니라 이번 테스트가 직접 넣은 두 행의 존재/부재로만 판단해 공유 DB의
+        기존 데이터와 무관하게 안정적으로 동작합니다."""
+        from storage.supabase_store import insert_qa_log, get_qa_logs_paginated
+        in_range = _make_log_entry(timestamp=datetime(2031, 6, 15, 3, 0, tzinfo=timezone.utc))
+        out_of_range = _make_log_entry(timestamp=datetime(2031, 1, 1, 3, 0, tzinfo=timezone.utc))
+        insert_qa_log(in_range, pg_conn)
+        insert_qa_log(out_of_range, pg_conn)
+
+        logs = get_qa_logs_paginated(
+            limit=200, offset=0, start_date="2031-06-01", end_date="2031-06-30", conn=pg_conn,
+        )
+        ids = {log["log_id"] for log in logs}
+        assert in_range["log_id"] in ids
+        assert out_of_range["log_id"] not in ids
+
+    def test_get_daily_qa_counts_buckets_by_kst_day_not_utc_day(self, pg_conn):
+        """UTC 15:30(=KST 다음날 00:30)에 들어온 로그는 KST 기준 다음날로 집계돼야
+        합니다 — UTC 기준이었다면 전날로 집계됐을 시각입니다."""
+        from storage.supabase_store import insert_qa_log, get_daily_qa_counts
+        entry = _make_log_entry(timestamp=datetime(2032, 3, 10, 15, 30, tzinfo=timezone.utc))
+        insert_qa_log(entry, pg_conn)
+
+        counts = get_daily_qa_counts(
+            limit=10, offset=0, start_date="2032-03-11", end_date="2032-03-11", conn=pg_conn,
+        )
+        assert sum(c["count"] for c in counts) == 1
+        assert counts[0]["day"] == "2032-03-11"
 
 
 # ══════════════════════════════════════════════════════════════
@@ -424,6 +506,66 @@ class TestToneOverride:
 # ══════════════════════════════════════════════════════════════
 # api/admin.py
 # ══════════════════════════════════════════════════════════════
+
+class TestAddMonths:
+    def test_simple_case(self):
+        from api.admin import _add_months
+        assert _add_months(date(2026, 1, 15), 3) == date(2026, 4, 15)
+
+    def test_crosses_year_boundary(self):
+        from api.admin import _add_months
+        assert _add_months(date(2026, 11, 1), 3) == date(2027, 2, 1)
+
+    def test_end_of_month_overflow_clamps_to_last_day(self):
+        from api.admin import _add_months
+        # 1/31 + 1개월은 2월에 31일이 없으므로 2/28(평년)로 클램프됩니다.
+        assert _add_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+
+    def test_zero_months_returns_same_date(self):
+        from api.admin import _add_months
+        assert _add_months(date(2026, 6, 21), 0) == date(2026, 6, 21)
+
+
+class TestValidateDateRange:
+    def test_both_none_returns_none_none(self):
+        from api.admin import _validate_date_range
+        assert _validate_date_range(None, None, 3, "테스트") == (None, None)
+
+    def test_only_start_date_raises_400(self):
+        from api.admin import _validate_date_range
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            _validate_date_range("2026-06-01", None, 3, "테스트")
+        assert exc.value.status_code == 400
+
+    def test_invalid_format_raises_400(self):
+        from api.admin import _validate_date_range
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            _validate_date_range("2026/06/01", "2026-06-21", 3, "테스트")
+        assert exc.value.status_code == 400
+
+    def test_start_after_end_raises_400(self):
+        from api.admin import _validate_date_range
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            _validate_date_range("2026-06-21", "2026-06-01", 3, "테스트")
+        assert exc.value.status_code == 400
+
+    def test_exceeds_max_months_raises_400_with_label(self):
+        from api.admin import _validate_date_range
+        from fastapi import HTTPException
+        with pytest.raises(HTTPException) as exc:
+            _validate_date_range("2026-01-01", "2026-12-31", 3, "테스트화면")
+        assert exc.value.status_code == 400
+        assert "테스트화면" in exc.value.detail
+        assert "최대 3개월" in exc.value.detail
+
+    def test_valid_range_within_max_months_passes_through(self):
+        from api.admin import _validate_date_range
+        result = _validate_date_range("2026-06-01", "2026-06-21", 3, "테스트")
+        assert result == ("2026-06-01", "2026-06-21")
+
 
 class TestAdminApi:
     @pytest.fixture
@@ -604,6 +746,84 @@ class TestAdminApi:
         assert res.json()["counts"] == {
             "지식DB공백": 0, "검색실패": 0, "질문모호성": 0, "정책밖요청": 3, "API오류": 0,
         }
+
+    # ── 기간별 조회조건 (날짜 범위 필터) ────────────────────────────
+
+    @pytest.mark.parametrize("endpoint,store_fn,extra_args", [
+        ("/monitoring/daily-counts", "get_daily_qa_counts", ()),
+        ("/monitoring/qa-logs", "get_qa_logs_paginated", ()),
+        ("/actions/incomplete", "get_logs_by_failure_causes", (["검색실패", "질문모호성"],)),
+        ("/actions/unresolved", "get_logs_by_failure_causes", (["지식DB공백", "정책밖요청"],)),
+    ])
+    def test_date_range_passed_through_to_store_function(
+        self, client, operator, endpoint, store_fn, extra_args,
+    ):
+        with patch(f"storage.supabase_store.{store_fn}", return_value=[]) as fake_store:
+            res = client.get(
+                f"{endpoint}?start_date=2026-06-01&end_date=2026-06-21",
+                headers=self.auth_header(operator),
+            )
+        assert res.status_code == 200
+        call_args = fake_store.call_args.args
+        assert call_args[-2:] == ("2026-06-01", "2026-06-21")
+
+    def test_failure_report_date_range_passed_through(self, client, operator):
+        with patch("storage.supabase_store.get_failure_cause_counts", return_value={}) as fake_store:
+            res = client.get(
+                "/actions/failure-report?start_date=2026-01-01&end_date=2026-06-21",
+                headers=self.auth_header(operator),
+            )
+        assert res.status_code == 200
+        fake_store.assert_called_once_with("2026-01-01", "2026-06-21")
+
+    @pytest.mark.parametrize("endpoint,max_months", [
+        ("/monitoring/daily-counts", 3),
+        ("/monitoring/qa-logs", 1),
+        ("/actions/incomplete", 3),
+        ("/actions/unresolved", 3),
+        ("/actions/failure-report", 12),
+    ])
+    def test_date_range_exceeding_max_months_returns_400(self, client, operator, endpoint, max_months):
+        from api.admin import _add_months
+        start = "2026-01-01"
+        too_far = _add_months(date(2026, 1, 1), max_months) + timedelta(days=1)
+        res = client.get(
+            f"{endpoint}?start_date={start}&end_date={too_far.isoformat()}",
+            headers=self.auth_header(operator),
+        )
+        assert res.status_code == 400
+        assert f"최대 {max_months}개월" in res.json()["detail"]
+
+    def test_date_range_only_start_date_returns_400(self, client, operator):
+        res = client.get(
+            "/monitoring/daily-counts?start_date=2026-06-01", headers=self.auth_header(operator),
+        )
+        assert res.status_code == 400
+
+    def test_date_range_start_after_end_returns_400(self, client, operator):
+        res = client.get(
+            "/monitoring/daily-counts?start_date=2026-06-21&end_date=2026-06-01",
+            headers=self.auth_header(operator),
+        )
+        assert res.status_code == 400
+
+    def test_date_range_invalid_format_returns_400(self, client, operator):
+        res = client.get(
+            "/monitoring/daily-counts?start_date=2026/06/01&end_date=2026-06-21",
+            headers=self.auth_header(operator),
+        )
+        assert res.status_code == 400
+
+    def test_date_range_exactly_at_max_months_succeeds(self, client, operator):
+        from api.admin import _add_months
+        start = date(2026, 1, 1)
+        end = _add_months(start, 3)
+        with patch("storage.supabase_store.get_daily_qa_counts", return_value=[]):
+            res = client.get(
+                f"/monitoring/daily-counts?start_date={start.isoformat()}&end_date={end.isoformat()}",
+                headers=self.auth_header(operator),
+            )
+        assert res.status_code == 200
 
     # ── 운영설정 ────────────────────────────────────────────────
 

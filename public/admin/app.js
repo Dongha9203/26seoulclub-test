@@ -99,6 +99,68 @@ function bindAccordions(root) {
   });
 }
 
+// ── 기간별 조회조건 (날짜 범위 필터) ────────────────────────────────
+// 백엔드 api/admin.py의 _add_months와 동일한 말일 클램프 규칙을 따릅니다
+// (예: 1/31 + 1개월 = 2/28). 여기서의 검사는 즉각적인 사용자 피드백용이고,
+// 실제 검증은 항상 백엔드(_validate_date_range)가 한 번 더 수행합니다.
+function addMonthsLocal(isoDate, months) {
+  const d = new Date(isoDate + "T00:00:00");
+  const day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + months);
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(day, lastDay));
+  return d;
+}
+
+function toISODate(d) {
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+function dateRangeFilterHtml(maxMonths, startDate, endDate, idPrefix) {
+  return `
+    <div class="date-range-filter" style="margin:0 0 16px; padding:10px 12px; border:1px solid #e2e2e2; border-radius:6px; background:#fafafa;">
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+        <strong>기간별 조회조건</strong>
+        <span class="muted">(최대 ${maxMonths}개월)</span>
+        <input type="date" id="${idPrefix}-start" value="${startDate || ""}">
+        <span>~</span>
+        <input type="date" id="${idPrefix}-end" value="${endDate || ""}">
+        <button id="${idPrefix}-search-btn" class="btn btn-secondary">조회</button>
+        <button id="${idPrefix}-reset-btn" class="btn btn-secondary">초기화</button>
+      </div>
+      <div id="${idPrefix}-error" class="error-text" style="margin-top:6px;"></div>
+    </div>
+  `;
+}
+
+function bindDateRangeFilter(idPrefix, maxMonths, onSearch, onReset) {
+  const errorEl = document.getElementById(`${idPrefix}-error`);
+  document.getElementById(`${idPrefix}-search-btn`).addEventListener("click", () => {
+    const startVal = document.getElementById(`${idPrefix}-start`).value;
+    const endVal = document.getElementById(`${idPrefix}-end`).value;
+    errorEl.textContent = "";
+    if (!startVal || !endVal) {
+      errorEl.textContent = "시작일과 종료일을 모두 입력해주세요.";
+      return;
+    }
+    if (startVal > endVal) {
+      errorEl.textContent = "시작일은 종료일보다 늦을 수 없습니다.";
+      return;
+    }
+    const maxEnd = toISODate(addMonthsLocal(startVal, maxMonths));
+    if (endVal > maxEnd) {
+      errorEl.textContent = `최대 ${maxMonths}개월까지 조회할 수 있습니다.`;
+      return;
+    }
+    onSearch(startVal, endVal);
+  });
+  document.getElementById(`${idPrefix}-reset-btn`).addEventListener("click", () => {
+    onReset();
+  });
+}
+
 // ── 라우터 ─────────────────────────────────────────────────────
 
 const routes = {
@@ -141,9 +203,11 @@ window.addEventListener("hashchange", navigate);
 
 // ── ① 모니터링 ─────────────────────────────────────────────────
 
-async function renderDailyCounts(main, page = 0) {
+async function renderDailyCounts(main, page = 0, startDate = null, endDate = null) {
   const limit = 30;
-  const data = await api(`/monitoring/daily-counts?limit=${limit}&offset=${page * limit}`);
+  const maxMonths = 3;
+  const dateQuery = (startDate && endDate) ? `&start_date=${startDate}&end_date=${endDate}` : "";
+  const data = await api(`/monitoring/daily-counts?limit=${limit}&offset=${page * limit}${dateQuery}`);
   const rows = data.daily_counts.map(
     (d) => `<tr><td>${escapeHtml(d.day)}</td><td>${d.count}</td></tr>`
   ).join("");
@@ -152,7 +216,8 @@ async function renderDailyCounts(main, page = 0) {
     "날짜별 집계 (한 번에 최대 30건)",
     "최근 날짜부터 날짜별로 집계한 결과입니다. (자료가 최고 1년을 보관하고 이후 자동삭제 되어, 1년이 지난 건은 집계에서 빠집니다.)",
     "매일 챗봇에 들어온 질문 수를 날짜별로 보여줍니다. 운영 추이를 파악하는 데 사용합니다.",
-    (data.daily_counts.length
+    dateRangeFilterHtml(maxMonths, startDate, endDate, "daily-counts-filter")
+    + (data.daily_counts.length
       ? `<table><thead><tr><th>날짜</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p class="muted">데이터가 없습니다.</p>`)
     + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
@@ -162,18 +227,23 @@ async function renderDailyCounts(main, page = 0) {
       </div>`
   );
   bindAccordions(main);
+  bindDateRangeFilter("daily-counts-filter", maxMonths,
+    (s, e) => renderDailyCounts(main, 0, s, e),
+    () => renderDailyCounts(main, 0, null, null));
 
   document.getElementById("daily-counts-prev").addEventListener("click", () => {
-    renderDailyCounts(main, page - 1);
+    renderDailyCounts(main, page - 1, startDate, endDate);
   });
   document.getElementById("daily-counts-more").addEventListener("click", () => {
-    renderDailyCounts(main, page + 1);
+    renderDailyCounts(main, page + 1, startDate, endDate);
   });
 }
 
-async function renderQaLogs(main, page = 0) {
+async function renderQaLogs(main, page = 0, startDate = null, endDate = null) {
   const limit = 30;
-  const data = await api(`/monitoring/qa-logs?limit=${limit}&offset=${page * limit}`);
+  const maxMonths = 1;
+  const dateQuery = (startDate && endDate) ? `&start_date=${startDate}&end_date=${endDate}` : "";
+  const data = await api(`/monitoring/qa-logs?limit=${limit}&offset=${page * limit}${dateQuery}`);
   const rows = data.logs.map((l) => `
     <tr>
       <td>${escapeHtml(new Date(l.timestamp).toLocaleString("ko-KR"))}</td>
@@ -187,7 +257,8 @@ async function renderQaLogs(main, page = 0) {
     "최근 질의-답변 (한 번에 최대 30건)",
     "사용자 질문과 챗봇 답변을 함께 보여줍니다. (이 자료는 최고 1년을 보관하고, 이후 자동삭제 됩니다.)",
     "사용자의 질문과 챗봇이 실제로 보낸 답변을 짝지어 확인할 수 있는 화면입니다.",
-    (data.logs.length
+    dateRangeFilterHtml(maxMonths, startDate, endDate, "qa-logs-filter")
+    + (data.logs.length
       ? `<table><thead><tr><th>시각</th><th>질문</th><th>답변</th><th>실패원인</th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p class="muted">아직 기록된 로그가 없습니다.</p>`)
     + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
@@ -197,21 +268,26 @@ async function renderQaLogs(main, page = 0) {
       </div>`
   );
   bindAccordions(main);
+  bindDateRangeFilter("qa-logs-filter", maxMonths,
+    (s, e) => renderQaLogs(main, 0, s, e),
+    () => renderQaLogs(main, 0, null, null));
 
   document.getElementById("qa-logs-prev").addEventListener("click", () => {
-    renderQaLogs(main, page - 1);
+    renderQaLogs(main, page - 1, startDate, endDate);
   });
   document.getElementById("qa-logs-more").addEventListener("click", () => {
-    renderQaLogs(main, page + 1);
+    renderQaLogs(main, page + 1, startDate, endDate);
   });
 }
 
 // ── ② 조치관리 ─────────────────────────────────────────────────
 
-async function renderActionList(endpoint, title, subtitle, page = 0) {
+async function renderActionList(endpoint, title, subtitle, page = 0, startDate = null, endDate = null) {
   const main = document.getElementById("main");
   const limit = 30;
-  const data = await api(`/actions/${endpoint}?limit=${limit}&offset=${page * limit}`);
+  const maxMonths = 3;
+  const dateQuery = (startDate && endDate) ? `&start_date=${startDate}&end_date=${endDate}` : "";
+  const data = await api(`/actions/${endpoint}?limit=${limit}&offset=${page * limit}${dateQuery}`);
 
   const rows = data.logs.map((l) => `
     <tr>
@@ -228,7 +304,8 @@ async function renderActionList(endpoint, title, subtitle, page = 0) {
     "이 목록의 항목들은 운영자가 노션 페이지나 데이터를 직접 찾아 수정해야 해결되는 사항입니다. "
     + "노션/데이터 수정을 완료했다면 \"삭제\" 버튼을 눌러 이 목록에서 제거해 주세요 "
     + "(일별 질의/응답 건수, 원인별 집계 리포트 등 통계에는 계속 남습니다 — 이 목록에서만 사라집니다).",
-    (data.logs.length
+    dateRangeFilterHtml(maxMonths, startDate, endDate, "action-list-filter")
+    + (data.logs.length
       ? `<table><thead><tr><th>시각</th><th>질문</th><th>실패원인</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
       : `<p class="muted">해당 조건에 해당하는 항목이 없습니다.</p>`)
     + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
@@ -238,12 +315,15 @@ async function renderActionList(endpoint, title, subtitle, page = 0) {
       </div>`
   );
   bindAccordions(main);
+  bindDateRangeFilter("action-list-filter", maxMonths,
+    (s, e) => renderActionList(endpoint, title, subtitle, 0, s, e),
+    () => renderActionList(endpoint, title, subtitle, 0, null, null));
 
   document.getElementById("action-list-prev").addEventListener("click", () => {
-    renderActionList(endpoint, title, subtitle, page - 1);
+    renderActionList(endpoint, title, subtitle, page - 1, startDate, endDate);
   });
   document.getElementById("action-list-more").addEventListener("click", () => {
-    renderActionList(endpoint, title, subtitle, page + 1);
+    renderActionList(endpoint, title, subtitle, page + 1, startDate, endDate);
   });
 
   main.querySelectorAll("[data-resolve]").forEach((btn) => {
@@ -259,8 +339,10 @@ async function renderActionList(endpoint, title, subtitle, page = 0) {
   });
 }
 
-async function renderFailureReport(main) {
-  const data = await api("/actions/failure-report");
+async function renderFailureReport(main, startDate = null, endDate = null) {
+  const maxMonths = 12;
+  const dateQuery = (startDate && endDate) ? `?start_date=${startDate}&end_date=${endDate}` : "";
+  const data = await api(`/actions/failure-report${dateQuery}`);
   const rows = Object.entries(data.counts).map(
     ([cause, cnt]) => `<tr><td>${escapeHtml(cause)}</td><td>${cnt}</td></tr>`
   ).join("");
@@ -275,9 +357,13 @@ async function renderFailureReport(main) {
       <li style="margin-bottom:6px;"><strong>정책밖요청</strong> — 날씨, 요리, 일반 상식, 다른 서비스 문의처럼 동아리ON 운영과 전혀 무관한 질문이라 챗봇이 답변 대상이 아니라고 안내한 경우입니다. 별도 조치가 필요 없는 정상적인 안내입니다.</li>
       <li><strong>API오류</strong> — 검색이나 질문 자체와는 무관하게, Claude API 호출이 일시적으로 실패해서(서버 과부하, 네트워크 오류 등) 답변을 만들지 못하고 운영팀 연락처를 안내한 경우입니다. 가끔 한두 건 보이는 건 정상이지만, 짧은 시간에 건수가 많이 쌓이면 API 사용량/네트워크 상태를 확인해 보세요.</li>
     </ul>`,
-    `<table><thead><tr><th>원인</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
+    dateRangeFilterHtml(maxMonths, startDate, endDate, "failure-report-filter")
+    + `<table><thead><tr><th>원인</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
   );
   bindAccordions(main);
+  bindDateRangeFilter("failure-report-filter", maxMonths,
+    (s, e) => renderFailureReport(main, s, e),
+    () => renderFailureReport(main, null, null));
 }
 
 // ── ③ 운영설정 ─────────────────────────────────────────────────

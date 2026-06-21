@@ -469,15 +469,29 @@ def get_recent_qa_logs(limit: int, conn=None) -> List[Dict]:
     return [{"session_id": r["session_id"], "keywords": r["keywords"]} for r in rows]
 
 
-def get_daily_qa_counts(limit: int = 30, offset: int = 0, conn=None) -> List[Dict]:
-    """일별 질의/응답 건수를 최신 날짜부터 페이지 단위로 반환합니다 (모니터링 화면용)."""
+_KST_DAY_EXPR = "(timestamp AT TIME ZONE 'Asia/Seoul')::date"
+
+
+def get_daily_qa_counts(
+    limit: int = 30, offset: int = 0,
+    start_date: Optional[str] = None, end_date: Optional[str] = None, conn=None,
+) -> List[Dict]:
+    """일별 질의/응답 건수를 최신 날짜부터 페이지 단위로 반환합니다 (모니터링 화면용).
+
+    날짜는 한국시간(KST) 기준 하루 단위로 집계합니다 — timestamp는 UTC로 저장되므로
+    KST로 변환한 뒤 날짜만 추출합니다. start_date/end_date(YYYY-MM-DD)가 모두 주어지면
+    기간별 조회조건으로 그 범위만 집계합니다."""
+    where_clause, params = "", []
+    if start_date and end_date:
+        where_clause = f"WHERE {_KST_DAY_EXPR} BETWEEN %s AND %s"
+        params = [start_date, end_date]
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
             cur.execute(
-                "SELECT DATE(timestamp) AS day, COUNT(*) AS cnt FROM qa_log "
-                "GROUP BY DATE(timestamp) ORDER BY day DESC LIMIT %s OFFSET %s",
-                (limit, offset),
+                f"SELECT {_KST_DAY_EXPR} AS day, COUNT(*) AS cnt FROM qa_log {where_clause} "
+                f"GROUP BY day ORDER BY day DESC LIMIT %s OFFSET %s",
+                (*params, limit, offset),
             )
             rows = cur.fetchall()
     finally:
@@ -486,14 +500,24 @@ def get_daily_qa_counts(limit: int = 30, offset: int = 0, conn=None) -> List[Dic
     return [{"day": r["day"].isoformat(), "count": r["cnt"]} for r in rows]
 
 
-def get_qa_logs_paginated(limit: int = 50, offset: int = 0, conn=None) -> List[Dict]:
-    """질의-답변 연계조회: 최근 로그를 페이지 단위로 반환합니다."""
+def get_qa_logs_paginated(
+    limit: int = 50, offset: int = 0,
+    start_date: Optional[str] = None, end_date: Optional[str] = None, conn=None,
+) -> List[Dict]:
+    """질의-답변 연계조회: 최근 로그를 페이지 단위로 반환합니다.
+
+    start_date/end_date(YYYY-MM-DD)가 모두 주어지면 한국시간(KST) 기준 그 날짜
+    범위로 좁혀서 조회합니다(기간별 조회조건)."""
+    where_clause, params = "", []
+    if start_date and end_date:
+        where_clause = f"WHERE {_KST_DAY_EXPR} BETWEEN %s AND %s"
+        params = [start_date, end_date]
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
             cur.execute(
-                "SELECT * FROM qa_log ORDER BY timestamp DESC LIMIT %s OFFSET %s",
-                (limit, offset),
+                f"SELECT * FROM qa_log {where_clause} ORDER BY timestamp DESC LIMIT %s OFFSET %s",
+                (*params, limit, offset),
             )
             rows = cur.fetchall()
     finally:
@@ -530,13 +554,20 @@ def delete_old_qa_logs(days: int = 365, conn=None) -> int:
             c.close()
 
 
-def get_logs_by_failure_causes(causes: List[str], limit: int = 50, offset: int = 0,
-                                conn=None) -> List[Dict]:
+def get_logs_by_failure_causes(
+    causes: List[str], limit: int = 50, offset: int = 0,
+    start_date: Optional[str] = None, end_date: Optional[str] = None, conn=None,
+) -> List[Dict]:
     """failure_cause가 주어진 목록에 속하는 로그를 조회합니다 (불완전답변/미해결답변 화면용).
 
     운영자가 노션/데이터를 수정해 처리 완료(action_status='완료')로 표시한 항목은
     목록에서 제외합니다. qa_log 행 자체는 지우지 않으므로 일별 건수/원인별 집계
-    통계에는 계속 반영됩니다."""
+    통계에는 계속 반영됩니다. start_date/end_date(YYYY-MM-DD)가 모두 주어지면
+    한국시간(KST) 기준 그 날짜 범위로 좁혀서 조회합니다(기간별 조회조건)."""
+    date_clause, params = "", [causes]
+    if start_date and end_date:
+        date_clause = f"AND {_KST_DAY_EXPR} BETWEEN %s AND %s"
+        params.extend([start_date, end_date])
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
@@ -545,9 +576,9 @@ def get_logs_by_failure_causes(causes: List[str], limit: int = 50, offset: int =
                 "AND NOT EXISTS ("
                 "  SELECT 1 FROM action_status"
                 "  WHERE action_status.log_id = qa_log.log_id AND action_status.status = '완료'"
-                ") "
+                f") {date_clause} "
                 "ORDER BY timestamp DESC LIMIT %s OFFSET %s",
-                (causes, limit, offset),
+                (*params, limit, offset),
             )
             rows = cur.fetchall()
     finally:
@@ -556,14 +587,24 @@ def get_logs_by_failure_causes(causes: List[str], limit: int = 50, offset: int =
     return [dict(r) for r in rows]
 
 
-def get_failure_cause_counts(conn=None) -> Dict[str, int]:
-    """원인별 집계 리포트: failure_cause 4종 건수."""
+def get_failure_cause_counts(
+    start_date: Optional[str] = None, end_date: Optional[str] = None, conn=None,
+) -> Dict[str, int]:
+    """원인별 집계 리포트: failure_cause 5종 건수.
+
+    start_date/end_date(YYYY-MM-DD)가 모두 주어지면 한국시간(KST) 기준 그 날짜
+    범위로 좁혀서 집계합니다(기간별 조회조건). 없으면 보존 중인 전체 기간 집계."""
+    date_clause, params = "", []
+    if start_date and end_date:
+        date_clause = f"AND {_KST_DAY_EXPR} BETWEEN %s AND %s"
+        params = [start_date, end_date]
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
             cur.execute(
                 "SELECT failure_cause, COUNT(*) AS cnt FROM qa_log "
-                "WHERE failure_cause IS NOT NULL GROUP BY failure_cause"
+                f"WHERE failure_cause IS NOT NULL {date_clause} GROUP BY failure_cause",
+                params,
             )
             rows = cur.fetchall()
     finally:
