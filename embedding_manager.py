@@ -70,10 +70,13 @@ def get_embedding_provider(config: dict) -> EmbeddingProvider:
 
 
 def backfill_embeddings(
-    docs: List["Document"], provider: EmbeddingProvider, model: str,
+    docs: List["Document"], provider: EmbeddingProvider, model: str, conn=None,
 ) -> Tuple[int, int]:
     """문서 목록을 배치로 임베딩해 저장합니다. 배치 하나가 실패해도 나머지는 계속
-    진행하고, (성공 건수, 실패 건수)를 반환합니다."""
+    진행하고, (성공 건수, 실패 건수)를 반환합니다.
+
+    conn을 넘기면 문서마다 새 DB 커넥션을 여는 대신 그 커넥션을 재사용합니다
+    (호출자가 연 커넥션이므로 여기서는 닫지 않습니다)."""
     from storage.supabase_store import update_embedding
 
     embedded, failed = 0, 0
@@ -87,7 +90,7 @@ def backfill_embeddings(
             failed += len(batch)
             continue
         for doc, embedding in zip(batch, embeddings):
-            update_embedding(doc.doc_id, embedding, model)
+            update_embedding(doc.doc_id, embedding, model, conn=conn)
             embedded += 1
 
     return embedded, failed

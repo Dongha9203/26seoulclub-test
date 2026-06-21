@@ -43,7 +43,7 @@ def _perform_incremental_sync() -> dict:
     from collectors.notion_collector import sync_notion_pages_incremental
     from embedding_manager import get_embedding_provider, backfill_embeddings
     from storage.supabase_store import (
-        initialize_db, delete_by_source_origin, upsert_documents, delete_old_qa_logs,
+        get_connection, initialize_db, delete_by_source_origin, upsert_documents, delete_old_qa_logs,
         get_documents_missing_embedding,
     )
     from utils.validators import validate_notion_block_ids
@@ -52,38 +52,44 @@ def _perform_incremental_sync() -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         config = _json.load(f)
 
-    initialize_db()
-
-    docs, summary = sync_notion_pages_incremental(config)
-
-    # 재귀로 발견되는 하위 페이지도 각자 고유한 source_origin을 가지므로, 이번에
-    # 실제로 재수집된 모든 source_origin을 기준으로 기존 Document를 지웁니다.
-    for source_origin in {d.source_origin for d in docs}:
-        deleted = delete_by_source_origin(source_origin)
-        logger.info("기존 Document 삭제: %s → %d건", source_origin, deleted)
-
-    inserted = upsert_documents(docs) if docs else 0
-    validation = validate_notion_block_ids(docs) if docs else {}
-
-    sources: dict = {}
-    for d in docs:
-        sources[d.source_origin] = sources.get(d.source_origin, 0) + 1
-
-    # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 변경분이 바로
-    # 검색에 반영되도록, 여기서 임베딩이 없는 노션 문서를 자동으로 백필합니다.
-    model = config.get("embedding_model")
-    embedded, embed_failed = 0, 0
+    # DB 작업 전체에서 커넥션 하나를 재사용합니다 (문서 1건당 새 커넥션을 여는
+    # 누적 비용을 피하기 위함 — api/sync_notion.py의 수동 갱신과 동일한 이유).
+    conn = get_connection()
     try:
-        provider = get_embedding_provider(config)
-        pending = [d for d in get_documents_missing_embedding(model) if d.source_type == "notion"]
-        embedded, embed_failed = backfill_embeddings(pending, provider, model)
-    except Exception:
-        logger.exception("노션 문서 임베딩 백필 중 오류")
-    if embedded or embed_failed:
-        logger.info("노션 문서 임베딩 백필: %d건 성공, %d건 실패", embedded, embed_failed)
+        initialize_db(conn=conn)
 
-    qa_log_purged = delete_old_qa_logs(_QA_LOG_RETENTION_DAYS)
-    logger.info("보존기간(%d일) 초과 qa_log 삭제: %d건", _QA_LOG_RETENTION_DAYS, qa_log_purged)
+        docs, summary = sync_notion_pages_incremental(config, conn=conn)
+
+        # 재귀로 발견되는 하위 페이지도 각자 고유한 source_origin을 가지므로, 이번에
+        # 실제로 재수집된 모든 source_origin을 기준으로 기존 Document를 지웁니다.
+        for source_origin in {d.source_origin for d in docs}:
+            deleted = delete_by_source_origin(source_origin, conn=conn)
+            logger.info("기존 Document 삭제: %s → %d건", source_origin, deleted)
+
+        inserted = upsert_documents(docs, conn=conn) if docs else 0
+        validation = validate_notion_block_ids(docs) if docs else {}
+
+        sources: dict = {}
+        for d in docs:
+            sources[d.source_origin] = sources.get(d.source_origin, 0) + 1
+
+        # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 변경분이 바로
+        # 검색에 반영되도록, 여기서 임베딩이 없는 노션 문서를 자동으로 백필합니다.
+        model = config.get("embedding_model")
+        embedded, embed_failed = 0, 0
+        try:
+            provider = get_embedding_provider(config)
+            pending = [d for d in get_documents_missing_embedding(model, conn=conn) if d.source_type == "notion"]
+            embedded, embed_failed = backfill_embeddings(pending, provider, model, conn=conn)
+        except Exception:
+            logger.exception("노션 문서 임베딩 백필 중 오류")
+        if embedded or embed_failed:
+            logger.info("노션 문서 임베딩 백필: %d건 성공, %d건 실패", embedded, embed_failed)
+
+        qa_log_purged = delete_old_qa_logs(_QA_LOG_RETENTION_DAYS, conn=conn)
+        logger.info("보존기간(%d일) 초과 qa_log 삭제: %d건", _QA_LOG_RETENTION_DAYS, qa_log_purged)
+    finally:
+        conn.close()
 
     return {
         "status": "ok",

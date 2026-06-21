@@ -132,7 +132,7 @@ class TestEmbeddingManager:
             embedded, failed = backfill_embeddings([doc], fake_provider, "voyage-4")
 
         assert (embedded, failed) == (1, 0)
-        fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4")
+        fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4", conn=None)
 
     def test_backfill_embeddings_batch_failure_counts_as_failed(self):
         from embedding_manager import backfill_embeddings

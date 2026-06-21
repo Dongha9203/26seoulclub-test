@@ -32,7 +32,8 @@ def _perform_sync() -> dict:
     from collectors.notion_collector import sync_notion_pages
     from embedding_manager import get_embedding_provider, backfill_embeddings
     from storage.supabase_store import (
-        initialize_db, delete_by_source_origin, upsert_documents, get_documents_missing_embedding,
+        get_connection, initialize_db, delete_by_source_origin, upsert_documents,
+        get_documents_missing_embedding,
     )
     from utils.validators import validate_notion_block_ids
 
@@ -40,39 +41,46 @@ def _perform_sync() -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         config = _json.load(f)
 
-    initialize_db()
-
-    docs, summary = sync_notion_pages(config)
-
-    # 최상위 페이지뿐 아니라, 그 안에서 재귀적으로 발견된 하위 페이지(child_page)도
-    # 각자 고유한 source_origin을 가지므로, 이번에 실제로 수집된 모든 source_origin을
-    # 기준으로 기존 Document를 지워야 매번 갱신할 때마다 하위 페이지가 중복 누적되지 않습니다.
-    for source_origin in {d.source_origin for d in docs}:
-        deleted = delete_by_source_origin(source_origin)
-        logger.info("기존 Document 삭제: %s → %d건", source_origin, deleted)
-
-    inserted = upsert_documents(docs)
-    validation = validate_notion_block_ids(docs)
-
-    # summary(=pages)는 최상위 페이지 키 기준이라 그 안에 재귀로 묶인 하위 페이지
-    # 문서 수가 전부 합산되어 보입니다. 운영자에게는 실제로 어떤 출처(하위 페이지
-    # 포함)가 몇 건씩 갱신됐는지 보여줘야 하므로 source_origin별로 따로 집계합니다.
-    sources: dict = {}
-    for d in docs:
-        sources[d.source_origin] = sources.get(d.source_origin, 0) + 1
-
-    # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 갱신 직후 바로
-    # 검색에 반영되도록, 여기서 임베딩이 없는 노션 문서를 자동으로 백필합니다.
-    model = config.get("embedding_model")
-    embedded, embed_failed = 0, 0
+    # DB 작업 전체에서 커넥션 하나를 재사용합니다. 매 호출마다 새 커넥션을 열면
+    # (문서 1건당 1회 포함) Vercel↔Supabase 간 연결 핸드셰이크가 수십 번
+    # 누적되어 "지금 갱신"이 체감상 매우 느려지므로, 여기서 한 번만 열고 끝까지 씁니다.
+    conn = get_connection()
     try:
-        provider = get_embedding_provider(config)
-        pending = [d for d in get_documents_missing_embedding(model) if d.source_type == "notion"]
-        embedded, embed_failed = backfill_embeddings(pending, provider, model)
-    except Exception:
-        logger.exception("노션 문서 임베딩 백필 중 오류")
-    if embedded or embed_failed:
-        logger.info("노션 문서 임베딩 백필: %d건 성공, %d건 실패", embedded, embed_failed)
+        initialize_db(conn=conn)
+
+        docs, summary = sync_notion_pages(config)
+
+        # 최상위 페이지뿐 아니라, 그 안에서 재귀적으로 발견된 하위 페이지(child_page)도
+        # 각자 고유한 source_origin을 가지므로, 이번에 실제로 수집된 모든 source_origin을
+        # 기준으로 기존 Document를 지워야 매번 갱신할 때마다 하위 페이지가 중복 누적되지 않습니다.
+        for source_origin in {d.source_origin for d in docs}:
+            deleted = delete_by_source_origin(source_origin, conn=conn)
+            logger.info("기존 Document 삭제: %s → %d건", source_origin, deleted)
+
+        inserted = upsert_documents(docs, conn=conn)
+        validation = validate_notion_block_ids(docs)
+
+        # summary(=pages)는 최상위 페이지 키 기준이라 그 안에 재귀로 묶인 하위 페이지
+        # 문서 수가 전부 합산되어 보입니다. 운영자에게는 실제로 어떤 출처(하위 페이지
+        # 포함)가 몇 건씩 갱신됐는지 보여줘야 하므로 source_origin별로 따로 집계합니다.
+        sources: dict = {}
+        for d in docs:
+            sources[d.source_origin] = sources.get(d.source_origin, 0) + 1
+
+        # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 갱신 직후 바로
+        # 검색에 반영되도록, 여기서 임베딩이 없는 노션 문서를 자동으로 백필합니다.
+        model = config.get("embedding_model")
+        embedded, embed_failed = 0, 0
+        try:
+            provider = get_embedding_provider(config)
+            pending = [d for d in get_documents_missing_embedding(model, conn=conn) if d.source_type == "notion"]
+            embedded, embed_failed = backfill_embeddings(pending, provider, model, conn=conn)
+        except Exception:
+            logger.exception("노션 문서 임베딩 백필 중 오류")
+        if embedded or embed_failed:
+            logger.info("노션 문서 임베딩 백필: %d건 성공, %d건 실패", embedded, embed_failed)
+    finally:
+        conn.close()
 
     return {
         "status": "ok",

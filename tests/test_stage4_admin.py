@@ -8,7 +8,7 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import jwt
 import pytest
@@ -910,7 +910,8 @@ class TestPerformSyncEmbeddingBackfill:
         fake_provider.embed_documents.return_value = [[0.1, 0.2]]
         fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
 
-        with patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
              patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
              patch("storage.supabase_store.upsert_documents", return_value=1), \
@@ -921,7 +922,7 @@ class TestPerformSyncEmbeddingBackfill:
             result = sync_notion_module._perform_sync()
 
         assert result["embedding"] == {"embedded": 1, "failed": 0}
-        fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4")
+        fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4", conn=ANY)
 
     def test_perform_sync_reports_doc_counts_per_actual_source(self, tmp_path, monkeypatch):
         """pages는 최상위 키 기준 합산이라, 실제 출처(하위 페이지 포함)별 건수는
@@ -939,7 +940,8 @@ class TestPerformSyncEmbeddingBackfill:
         ]
         fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 3, "skipped": False}}
 
-        with patch("collectors.notion_collector.sync_notion_pages", return_value=(docs, fake_summary)), \
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages", return_value=(docs, fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
              patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
              patch("storage.supabase_store.upsert_documents", return_value=3), \
@@ -961,7 +963,8 @@ class TestPerformSyncEmbeddingBackfill:
         doc = Document.new(source_type="notion", source_origin="main", title="t", content="c")
         fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
 
-        with patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
              patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
              patch("storage.supabase_store.upsert_documents", return_value=1), \
@@ -986,7 +989,8 @@ class TestPerformSyncEmbeddingBackfill:
         fake_provider.embed_documents.return_value = [[0.3, 0.4]]
         fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
 
-        with patch("collectors.notion_collector.sync_notion_pages_incremental",
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages_incremental",
                    return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
              patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
@@ -999,7 +1003,7 @@ class TestPerformSyncEmbeddingBackfill:
             result = cron_sync_module._perform_incremental_sync()
 
         assert result["embedding"] == {"embedded": 1, "failed": 0}
-        fake_update.assert_called_once_with(doc.doc_id, [0.3, 0.4], "voyage-4")
+        fake_update.assert_called_once_with(doc.doc_id, [0.3, 0.4], "voyage-4", conn=ANY)
 
 
 # ══════════════════════════════════════════════════════════════
