@@ -422,11 +422,16 @@ async function renderKb(main) {
   main.querySelectorAll("[data-delete]").forEach((btn) => {
     btn.addEventListener("click", async () => {
       if (!confirm("이 문서를 삭제할까요?")) return;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span> 삭제 중...`;
       try {
         await api(`/kb/documents/${btn.dataset.delete}`, { method: "DELETE" });
         renderKb(main);
       } catch (err) {
         alert("삭제 실패: " + err.message);
+        btn.disabled = false;
+        btn.textContent = originalText;
       }
     });
   });
