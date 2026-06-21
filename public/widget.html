@@ -87,19 +87,30 @@ function appendBubble(text, kind) {
   return el;
 }
 
-function appendBotAnswer(answer, deepLink) {
+const MARKDOWN_LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g;
+
+function appendBotAnswer(answer) {
   const el = document.createElement("div");
   el.className = "bubble bot";
-  el.textContent = answer;
-  if (deepLink) {
-    el.appendChild(document.createElement("br"));
+
+  let lastIndex = 0;
+  let match;
+  while ((match = MARKDOWN_LINK_RE.exec(answer)) !== null) {
+    if (match.index > lastIndex) {
+      el.appendChild(document.createTextNode(answer.slice(lastIndex, match.index)));
+    }
     const a = document.createElement("a");
-    a.href = deepLink;
+    a.href = match[2];
     a.target = "_blank";
     a.rel = "noopener noreferrer";
-    a.textContent = "자세히 보기 →";
+    a.textContent = match[1];
     el.appendChild(a);
+    lastIndex = match.index + match[0].length;
   }
+  if (lastIndex < answer.length) {
+    el.appendChild(document.createTextNode(answer.slice(lastIndex)));
+  }
+
   messagesEl.appendChild(el);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 }
@@ -124,7 +135,7 @@ async function sendQuestion() {
     typingEl.remove();
 
     if (res.ok) {
-      appendBotAnswer(data.answer, data.deep_link);
+      appendBotAnswer(data.answer);
     } else if (res.status === 429) {
       appendBubble(data.error || "잠시 후 다시 시도해주세요.", "error");
     } else {
