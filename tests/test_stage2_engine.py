@@ -928,13 +928,17 @@ class TestChatbotEngine:
         assert response.escalated_to_operation_team is True
 
     def test_handle_question_ambiguous_question_skips_search_and_llm(self, engine):
+        """모호한 질문은 문서를 추측해서 답변하면 왜곡된 정보를 줄 위험이 있으므로,
+        운영팀 안내 대신 질문을 구체화해 다시 물어보도록 유도해야 합니다."""
         from failure_analyzer import FailureCause
 
         response = engine.handle_question("음", "session-12")
 
         assert response.failure_cause == FailureCause.QUESTION_AMBIGUITY
         assert response.search_success is False
-        assert response.escalated_to_operation_team is True
+        assert response.escalated_to_operation_team is False
+        assert "다시 한번" in response.answer
+        assert "운영팀" not in response.answer
         engine._search_engine.search.assert_not_called()
         engine._anthropic_client.messages.create.assert_not_called()
 

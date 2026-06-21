@@ -214,15 +214,14 @@ class ChatbotEngine:
         # 질문 관련성과 무관하게 통과되는 경우가 있어(실제 발견된 한계), 이 체크는
         # 신뢰도 결과를 기다리지 않고 먼저 수행합니다 — 검색/임베딩 호출도 절약됩니다.
         if len(keywords) < self._min_keywords:
-            answer = (
-                "죄송합니다, 문의하신 내용을 정확히 확인하기 어려워요. "
-                "아래 운영팀으로 직접 문의해 주시면 빠르게 도와드릴게요.\n\n"
-                + _format_operation_team_contact(self._config)
-            )
+            # 진짜로 모호한 질문은 검색 결과/문서를 추측해서 답변하면 왜곡된 정보를
+            # 줄 위험이 있으므로(예: 무관한 문서 내용을 끌어다 쓰는 것), 운영팀 안내
+            # 대신 사용자가 질문을 구체화하도록 유도합니다.
+            answer = "죄송합니다, 질문 내용이 정확하지 않아 답변하기 어려워요. 질문하신 내용을 좀 더 구체적으로 다시 한번 말씀해 주시겠어요?"
             response = ChatbotResponse(
                 answer=answer, situation=None, response_attitude=None,
                 failure_cause=FailureCause.QUESTION_AMBIGUITY, sentiment_score=None, search_success=False,
-                blocked_by_filter=False, escalated_to_operation_team=True,
+                blocked_by_filter=False, escalated_to_operation_team=False,
                 top_score=0.0, deep_link=None, repeated_count=repeated_count,
                 category=category, keywords=keywords,
             )
@@ -233,7 +232,7 @@ class ChatbotEngine:
                 "failure_cause": FailureCause.QUESTION_AMBIGUITY.value, "situation": None, "response_attitude": None,
                 "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
                 "matched_doc_ids": [], "deep_link": None,
-                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+                "escalated_to_operation_team": False, "latency_ms": _elapsed_ms(start),
             })
             return response
 
