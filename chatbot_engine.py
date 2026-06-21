@@ -315,12 +315,11 @@ class ChatbotEngine:
         # ── step: 톤 지침 생성 → Claude API 1회 호출 ─────────────────────
         tone_instruction = self._tone_builder.build_instruction(situation)
         low_confidence = low_confidence_search or situation == Situation.INFO_GAP
-        # 정보부재 상황이거나 검색 신뢰도가 낮은 경우, Claude가 운영팀 연락을
-        # 안내할 수 있으므로 실제 연락처를 프롬프트에 그대로 박아 넣어
-        # 지어내지 못하게 합니다.
-        operation_team_contact = (
-            _format_operation_team_contact(self._config) if low_confidence else None
-        )
+        # 검색된 문서 안에도 운영팀 연락처가 적혀 있을 수 있는데, 그 내용이 대시보드
+        # 설정값과 어긋나면(예: 노션 문서에 남은 옛 전화번호) 신뢰도와 무관하게 잘못된
+        # 연락처가 그대로 노출됩니다. 그래서 신뢰도 분기와 상관없이 항상 실제 연락처를
+        # 프롬프트에 박아 넣어, 문서 내용보다 이 값을 우선하도록 강제합니다.
+        operation_team_contact = _format_operation_team_contact(self._config)
         system_prompt = build_system_prompt(tone_instruction, results, low_confidence, operation_team_contact)
         try:
             answer, sentiment_score, resolution_status = call_claude(

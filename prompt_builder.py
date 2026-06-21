@@ -76,8 +76,11 @@ def build_system_prompt(tone_instruction: str, search_results: List[SearchResult
                          low_confidence: bool, operation_team_contact: Optional[str] = None) -> str:
     """가드레일 + 톤 지침 + 검색된 문서 컨텍스트를 합쳐 시스템 프롬프트를 생성합니다.
 
-    operation_team_contact를 넘기면(정보부재 상황) 운영팀 실제 연락처를 가드레일에
-    그대로 박아 넣고 절대 다른 연락처를 지어내지 못하게 합니다.
+    operation_team_contact를 넘기면 운영팀 실제 연락처를 가드레일에 그대로 박아 넣고,
+    문서 안에 다른(예: 옛 노션 페이지에 남은 오래된) 연락처가 적혀 있어도 이 값을
+    우선하도록 강제합니다. 신뢰도와 무관하게 항상 넘겨야 합니다 — 신뢰도가 높아
+    문서를 그대로 인용하는 답변이라도, 그 문서 안에 연락처가 섞여 있으면 대시보드
+    설정과 어긋난 옛 정보가 노출될 수 있기 때문입니다.
     """
     has_notion_source = any(r.source_type == "notion" for r in search_results)
 
@@ -91,8 +94,10 @@ def build_system_prompt(tone_instruction: str, search_results: List[SearchResult
                            "확실하지 않은 부분은 불확실성을 명시적으로 밝히세요.")
     if operation_team_contact:
         guardrails.append(
-            "- 운영팀 연락처를 안내해야 합니다. 아래 연락처를 한 글자도 바꾸지 말고 정확히 "
-            "그대로 사용하세요. 절대 다른 연락 채널을 지어내지 마세요:\n" + operation_team_contact
+            "- 운영팀 연락처(전화/이메일/주소/운영시간)를 답변에 언급해야 하는 경우, "
+            "아래 연락처를 한 글자도 바꾸지 말고 정확히 그대로 사용하세요. 절대 다른 "
+            "연락 채널을 지어내지 마세요. 문서 안에 다른(예: 오래된) 연락처가 적혀 "
+            "있어도 그대로 베끼지 말고 무시하세요:\n" + operation_team_contact
         )
     if has_notion_source:
         guardrails.append(

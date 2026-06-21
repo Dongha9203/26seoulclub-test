@@ -866,6 +866,34 @@ class TestChatbotEngine:
         assert response.deep_link == "https://notion.so/abc#12345678123412341234123456789abc"
         assert response.escalated_to_operation_team is False
 
+    def test_handle_question_high_confidence_still_passes_real_contact_to_prompt(self, engine):
+        """검색 신뢰도가 높아도 매칭된 문서 안에 오래된 연락처가 적혀 있을 수 있으므로,
+        Claude가 문서 속 연락처보다 대시보드의 실제 연락처를 우선하도록 신뢰도와
+        무관하게 항상 실제 연락처를 프롬프트에 넘겨야 합니다."""
+        from hybrid_search import SearchResult
+
+        results = [SearchResult(
+            doc_id="d1", title="공휴일 운영 안내", content="공휴일에는 근무자가 없습니다.",
+            category="미분류", source_type="notion",
+            notion_block_id="12345678-1234-1234-1234-123456789abc",
+            notion_page_url="https://notion.so/abc", vector_score=0.9, bm25_score=0.9,
+            combined_score=0.9,
+        )]
+        engine._search_engine.search.return_value = results
+        engine._search_engine.is_confident.return_value = True
+
+        block = MagicMock()
+        block.type = "tool_use"
+        block.name = "provide_answer"
+        block.input = {"answer": "공휴일에는 근무자가 없습니다.",
+                       "sentiment_score": 0.0, "resolution_status": "해결됨"}
+        engine._anthropic_client.messages.create.return_value = MagicMock(content=[block])
+
+        engine.handle_question("공휴일에 근무자 없어?", "session-holiday")
+
+        system_prompt = engine._anthropic_client.messages.create.call_args.kwargs["system"]
+        assert "02-0000-0000" in system_prompt
+
     def test_handle_question_claude_reports_unresolved_sets_failure_cause(self, engine):
         """is_confident()가 True여도 Claude가 resolution_status로 미해결을 보고하면
         failure_cause가 채워지고 딥링크 없이 운영팀으로 안내해야 합니다 (실제 발견된
