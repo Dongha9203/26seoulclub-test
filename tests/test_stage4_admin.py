@@ -890,7 +890,7 @@ class TestAdminApi:
     def test_manual_source_guide_success(self, client, operator):
         res = client.get("/kb/manual-source-guide", headers=self.auth_header(operator))
         assert res.status_code == 200
-        assert len(res.json()["guide"]) == 5
+        assert len(res.json()["guide"]) == 3
 
 
 class TestPerformSyncEmbeddingBackfill:

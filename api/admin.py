@@ -519,9 +519,7 @@ def notion_faq_url(operator_email: str = Depends(get_current_operator)):
 def manual_source_guide(operator_email: str = Depends(get_current_operator)):
     return {
         "guide": [
-            {"source_type": "Word(.docx)", "처리방식": "파일을 직접 업로드하면 자동 파싱됩니다"},
-            {"source_type": "PDF", "처리방식": "파일을 직접 업로드하면 자동 파싱됩니다"},
-            {"source_type": "Excel(.xlsx)", "처리방식": "파일을 직접 업로드하면 자동 파싱됩니다"},
+            {"source_type": "Word(.docx) / PDF / Excel(.xlsx)", "처리방식": "파일을 직접 업로드하면 자동 파싱됩니다"},
             {"source_type": "HWP / HWPX", "처리방식": "직접 업로드 불가 — 사전에 PDF나 텍스트 파일로 변환한 뒤 업로드해야 합니다"},
             {"source_type": "구글 스프레드시트", "처리방식": "공개 공유 링크(누구나 보기) URL을 매번 새로 입력하면 가져옵니다. 비공개 시트는 지원되지 않습니다"},
         ]
