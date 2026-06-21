@@ -37,6 +37,31 @@ class TestMorphemeAnalyzer:
         from morpheme_analyzer import extract_keywords
         assert extract_keywords("   ") == []
 
+    def test_extract_keywords_excludes_bare_light_verbs(self):
+        """'하다/있다/없다/되다/같다'는 거의 모든 문장에 등장하는 경동사/형용사라
+        그 자체로는 주제를 담지 못합니다. 단독으로 쓰이면(예: "있나요?") 키워드로
+        잡히지 않아야 모호한 질문이 모호성 판정을 정상적으로 통과합니다."""
+        from morpheme_analyzer import extract_keywords
+        assert extract_keywords("있나요?") == []
+        assert extract_keywords("이거 어떻게 해요?") == []
+        assert extract_keywords("같아요") == []
+
+    def test_extract_keywords_already_excludes_other_contentless_predicates(self):
+        """'아니다'는 VCN, '그렇다/어떻다'는 Kiwi가 VA가 아닌 VA-I로 태깅해
+        _KEEP_TAGS에 안 걸리므로 별도 처리 없이도 이미 키워드에서 제외됩니다."""
+        from morpheme_analyzer import extract_keywords
+        assert extract_keywords("아닌가요?") == []
+        assert extract_keywords("그런가요?") == []
+        assert extract_keywords("어때요?") == []
+
+    def test_extract_keywords_keeps_light_verb_stem_within_real_content_words(self):
+        """'지급되나요'처럼 명사에 붙은 접미사(XSV)는 원래도 키워드가 아니었고,
+        '힘들어요'처럼 의미를 담은 형용사 어간은 경동사 제외 목록에 없어 그대로
+        키워드로 남아야 합니다."""
+        from morpheme_analyzer import extract_keywords
+        assert extract_keywords("활동 수당은 언제 지급되나요?") == ["활동", "수당", "지급"]
+        assert extract_keywords("힘들어요") == ["힘들"]
+
     def test_analyze_combines_keywords_and_category(self):
         from morpheme_analyzer import analyze
         result = analyze("수당 지급 기준이 뭐예요?")
@@ -939,6 +964,34 @@ class TestChatbotEngine:
         assert response.escalated_to_operation_team is False
         assert "다시 한번" in response.answer
         assert "운영팀" not in response.answer
+        engine._search_engine.search.assert_not_called()
+        engine._anthropic_client.messages.create.assert_not_called()
+
+    def test_handle_question_bare_light_verb_question_is_also_ambiguous(self, engine):
+        """'있나요?'처럼 의미 없는 경동사("있다") 하나만 있는 질문도 실질적인
+        키워드가 없는 것이므로 모호성 분기를 타야 합니다 (형태소 분석기가
+        "있"을 키워드로 잘못 잡아 일반 검색 경로로 빠지던 경계 케이스)."""
+        from failure_analyzer import FailureCause
+
+        response = engine.handle_question("있나요?", "session-light-verb")
+
+        assert response.failure_cause == FailureCause.QUESTION_AMBIGUITY
+        engine._search_engine.search.assert_not_called()
+        engine._anthropic_client.messages.create.assert_not_called()
+
+    def test_handle_question_known_ambiguous_phrases_batch(self, engine):
+        """실제 챗봇에 던져 모호성 판정이 정상 동작함을 확인했던 질문 묶음을
+        고정 회귀 테스트로 남겨, 형태소 분석기나 라이브러리 버전이 바뀌어도
+        운영 중 발견 대신 여기서 먼저 잡히도록 합니다."""
+        from failure_analyzer import FailureCause
+
+        known_ambiguous_phrases = [
+            "음", "그게 뭐예요", "이거 뭐예요?", "뭐라고요?", "그래서요?",
+            "네?", "그건 뭐죠", "ㅇㅋ", "뭐임", "있나요?", "같아요",
+        ]
+        for i, phrase in enumerate(known_ambiguous_phrases):
+            response = engine.handle_question(phrase, f"session-amb-batch-{i}")
+            assert response.failure_cause == FailureCause.QUESTION_AMBIGUITY, phrase
         engine._search_engine.search.assert_not_called()
         engine._anthropic_client.messages.create.assert_not_called()
 

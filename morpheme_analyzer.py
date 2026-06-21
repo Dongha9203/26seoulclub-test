@@ -18,6 +18,15 @@ logger = logging.getLogger(__name__)
 _KEEP_TAGS = {"NNG", "NNP", "NNB", "VV", "VA", "VX", "XR", "SL", "SN"}
 _MIN_FORM_LEN = 1
 
+# "하다/있다/없다/되다/같다"는 거의 모든 문장에 등장하는 의존적 경동사/형용사라
+# 그 자체로는 주제를 담지 못합니다. 단독으로 추출되면(예: "이거 어떻게 해요?",
+# "있나요?", "같아요") 키워드 개수 기반 모호성 판정과 BM25 검색 모두에서
+# 잡음이 됩니다. 이 집합은 한국어에서 닫혀있는 작은 목록이라(나머지 후보인
+# "아니다"/"그렇다"/"어떻다"는 Kiwi가 VCN/VA-I로 따로 태깅해 _KEEP_TAGS에
+# 걸리지 않아 이미 제외됨) 앞으로 계속 늘어날 일은 거의 없습니다.
+_CONTENTLESS_VERB_STEMS = {"하", "있", "없", "되", "같"}
+_VERB_TAGS = {"VV", "VA", "VX"}
+
 _kiwi: Kiwi = None
 
 
@@ -42,6 +51,7 @@ def extract_keywords(text: str) -> List[str]:
     keywords = [
         t.form for t in tokens
         if t.tag in _KEEP_TAGS and len(t.form) >= _MIN_FORM_LEN
+        and not (t.tag in _VERB_TAGS and t.form in _CONTENTLESS_VERB_STEMS)
     ]
     return keywords
 
