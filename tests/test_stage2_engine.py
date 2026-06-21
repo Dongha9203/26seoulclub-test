@@ -128,11 +128,11 @@ class TestEmbeddingManager:
         fake_provider = MagicMock()
         fake_provider.embed_documents.return_value = [[0.1, 0.2]]
 
-        with patch("storage.supabase_store.update_embedding") as fake_update:
+        with patch("storage.supabase_store.update_embeddings_batch") as fake_update:
             embedded, failed = backfill_embeddings([doc], fake_provider, "voyage-4")
 
         assert (embedded, failed) == (1, 0)
-        fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4", conn=None)
+        fake_update.assert_called_once_with([(doc.doc_id, [0.1, 0.2])], "voyage-4", conn=None)
 
     def test_backfill_embeddings_batch_failure_counts_as_failed(self):
         from embedding_manager import backfill_embeddings
@@ -141,7 +141,7 @@ class TestEmbeddingManager:
         fake_provider = MagicMock()
         fake_provider.embed_documents.side_effect = ConnectionError("voyage api down")
 
-        with patch("storage.supabase_store.update_embedding") as fake_update:
+        with patch("storage.supabase_store.update_embeddings_batch") as fake_update:
             embedded, failed = backfill_embeddings([doc], fake_provider, "voyage-4")
 
         assert (embedded, failed) == (0, 1)

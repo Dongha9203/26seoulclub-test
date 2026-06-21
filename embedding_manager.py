@@ -76,8 +76,13 @@ def backfill_embeddings(
     진행하고, (성공 건수, 실패 건수)를 반환합니다.
 
     conn을 넘기면 문서마다 새 DB 커넥션을 여는 대신 그 커넥션을 재사용합니다
-    (호출자가 연 커넥션이므로 여기서는 닫지 않습니다)."""
-    from storage.supabase_store import update_embedding
+    (호출자가 연 커넥션이므로 여기서는 닫지 않습니다).
+
+    DB 저장은 문서별로 update_embedding을 반복 호출하지 않고
+    update_embeddings_batch로 배치당 1회 왕복에 묶어서 보냅니다 — Vercel↔Supabase
+    처럼 리전이 멀어 왕복마다 수백 ms가 드는 환경에서 문서 수만큼 지연이
+    누적되는 걸 피하기 위함입니다."""
+    from storage.supabase_store import update_embeddings_batch
 
     embedded, failed = 0, 0
     for start in range(0, len(docs), _EMBED_BATCH_SIZE):
@@ -89,8 +94,8 @@ def backfill_embeddings(
             logger.exception("일괄 임베딩 배치 실패 (start=%d)", start)
             failed += len(batch)
             continue
-        for doc, embedding in zip(batch, embeddings):
-            update_embedding(doc.doc_id, embedding, model, conn=conn)
-            embedded += 1
+        items = [(doc.doc_id, embedding) for doc, embedding in zip(batch, embeddings)]
+        update_embeddings_batch(items, model, conn=conn)
+        embedded += len(items)
 
     return embedded, failed

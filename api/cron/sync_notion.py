@@ -43,7 +43,7 @@ def _perform_incremental_sync() -> dict:
     from collectors.notion_collector import sync_notion_pages_incremental
     from embedding_manager import get_embedding_provider, backfill_embeddings
     from storage.supabase_store import (
-        get_connection, initialize_db, delete_by_source_origin, upsert_documents, delete_old_qa_logs,
+        get_connection, initialize_db, delete_by_source_origins, upsert_documents, delete_old_qa_logs,
         get_documents_missing_embedding,
     )
     from utils.validators import validate_notion_block_ids
@@ -62,9 +62,9 @@ def _perform_incremental_sync() -> dict:
 
         # 재귀로 발견되는 하위 페이지도 각자 고유한 source_origin을 가지므로, 이번에
         # 실제로 재수집된 모든 source_origin을 기준으로 기존 Document를 지웁니다.
-        for source_origin in {d.source_origin for d in docs}:
-            deleted = delete_by_source_origin(source_origin, conn=conn)
-            logger.info("기존 Document 삭제: %s → %d건", source_origin, deleted)
+        # source_origin별로 반복 삭제하지 않고 ANY(%s)로 한 번에 지워 라운드트립을 줄입니다.
+        deleted = delete_by_source_origins(list({d.source_origin for d in docs}), conn=conn)
+        logger.info("기존 Document 삭제: 총 %d건", deleted)
 
         inserted = upsert_documents(docs, conn=conn) if docs else 0
         validation = validate_notion_block_ids(docs) if docs else {}

@@ -913,16 +913,16 @@ class TestPerformSyncEmbeddingBackfill:
         with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
              patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
-             patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
+             patch("storage.supabase_store.delete_by_source_origins", return_value=0), \
              patch("storage.supabase_store.upsert_documents", return_value=1), \
              patch("utils.validators.validate_notion_block_ids", return_value={}), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
              patch("storage.supabase_store.get_documents_missing_embedding", return_value=[doc]), \
-             patch("storage.supabase_store.update_embedding") as fake_update:
+             patch("storage.supabase_store.update_embeddings_batch") as fake_update:
             result = sync_notion_module._perform_sync()
 
         assert result["embedding"] == {"embedded": 1, "failed": 0}
-        fake_update.assert_called_once_with(doc.doc_id, [0.1, 0.2], "voyage-4", conn=ANY)
+        fake_update.assert_called_once_with([(doc.doc_id, [0.1, 0.2])], "voyage-4", conn=ANY)
 
     def test_perform_sync_reports_doc_counts_per_actual_source(self, tmp_path, monkeypatch):
         """pages는 최상위 키 기준 합산이라, 실제 출처(하위 페이지 포함)별 건수는
@@ -943,7 +943,7 @@ class TestPerformSyncEmbeddingBackfill:
         with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
              patch("collectors.notion_collector.sync_notion_pages", return_value=(docs, fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
-             patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
+             patch("storage.supabase_store.delete_by_source_origins", return_value=0), \
              patch("storage.supabase_store.upsert_documents", return_value=3), \
              patch("utils.validators.validate_notion_block_ids", return_value={}), \
              patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
@@ -966,7 +966,7 @@ class TestPerformSyncEmbeddingBackfill:
         with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
              patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
-             patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
+             patch("storage.supabase_store.delete_by_source_origins", return_value=0), \
              patch("storage.supabase_store.upsert_documents", return_value=1), \
              patch("utils.validators.validate_notion_block_ids", return_value={}), \
              patch("embedding_manager.get_embedding_provider",
@@ -993,17 +993,17 @@ class TestPerformSyncEmbeddingBackfill:
              patch("collectors.notion_collector.sync_notion_pages_incremental",
                    return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
-             patch("storage.supabase_store.delete_by_source_origin", return_value=0), \
+             patch("storage.supabase_store.delete_by_source_origins", return_value=0), \
              patch("storage.supabase_store.upsert_documents", return_value=1), \
              patch("utils.validators.validate_notion_block_ids", return_value={}), \
              patch("storage.supabase_store.delete_old_qa_logs", return_value=0), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
              patch("storage.supabase_store.get_documents_missing_embedding", return_value=[doc]), \
-             patch("storage.supabase_store.update_embedding") as fake_update:
+             patch("storage.supabase_store.update_embeddings_batch") as fake_update:
             result = cron_sync_module._perform_incremental_sync()
 
         assert result["embedding"] == {"embedded": 1, "failed": 0}
-        fake_update.assert_called_once_with(doc.doc_id, [0.3, 0.4], "voyage-4", conn=ANY)
+        fake_update.assert_called_once_with([(doc.doc_id, [0.3, 0.4])], "voyage-4", conn=ANY)
 
 
 # ══════════════════════════════════════════════════════════════

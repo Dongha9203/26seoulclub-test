@@ -98,13 +98,19 @@ def upsert_document(doc: Document, conn=None) -> None:
 
 
 def upsert_documents(docs: List[Document], conn=None) -> int:
+    """문서 다건을 INSERT ON CONFLICT UPDATE합니다.
+
+    `execute_values`로 한 번의 라운드트립에 전체를 보냅니다 — `executemany`는
+    psycopg2에서 내부적으로 row마다 별도 statement를 보내, Vercel↔Supabase처럼
+    리전이 멀어 라운드트립당 수백 ms가 드는 환경에서는 문서 수만큼 지연이
+    누적되는 문제가 있었습니다."""
     if not docs:
         return 0
     sql = """
     INSERT INTO documents
         (doc_id, source_type, source_origin, title, content, category,
          notion_page_url, notion_block_id, last_updated, is_editable)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    VALUES %s
     ON CONFLICT (doc_id) DO UPDATE SET
         source_type     = EXCLUDED.source_type,
         source_origin   = EXCLUDED.source_origin,
@@ -125,7 +131,7 @@ def upsert_documents(docs: List[Document], conn=None) -> int:
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
-            cur.executemany(sql, rows)
+            psycopg2.extras.execute_values(cur, sql, rows)
         c.commit()
     finally:
         if owns_conn:
@@ -138,6 +144,26 @@ def delete_by_source_origin(source_origin: str, conn=None) -> int:
     try:
         with c.cursor() as cur:
             cur.execute("DELETE FROM documents WHERE source_origin = %s", (source_origin,))
+            deleted = cur.rowcount
+        c.commit()
+        return deleted
+    finally:
+        if owns_conn:
+            c.close()
+
+
+def delete_by_source_origins(source_origins: List[str], conn=None) -> int:
+    """여러 source_origin을 한 라운드트립으로 삭제합니다 (노션 동기화처럼 출처별로
+    반복 삭제해야 하는 경우, 출처 수만큼 왕복하지 않도록)."""
+    if not source_origins:
+        return 0
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "DELETE FROM documents WHERE source_origin = ANY(%s)",
+                (list(source_origins),),
+            )
             deleted = cur.rowcount
         c.commit()
         return deleted
@@ -290,6 +316,37 @@ def update_embedding(doc_id: str, embedding: List[float], model_name: str, conn=
                 (psycopg2.extras.Json(embedding), model_name,
                  datetime.now(timezone.utc).isoformat(), doc_id),
             )
+        c.commit()
+    finally:
+        if owns_conn:
+            c.close()
+
+
+def update_embeddings_batch(
+    items: List[Tuple[str, List[float]]], model_name: str, conn=None,
+) -> None:
+    """여러 문서의 임베딩을 한 라운드트립으로 저장합니다 (노션 동기화 백필처럼
+    문서 수만큼 update_embedding을 반복 호출하면, Vercel↔Supabase 간 리전이
+    멀어 왕복마다 수백 ms가 쌓이는 문제가 있었습니다).
+
+    embedding은 VALUES절에서 text literal로 들어오므로 ::jsonb로 명시 캐스트해야
+    하고, last_updated도 마찬가지로 ::timestamptz 캐스트가 필요합니다."""
+    if not items:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    rows = [(doc_id, psycopg2.extras.Json(embedding), model_name, now) for doc_id, embedding in items]
+    sql = """
+    UPDATE documents AS d
+    SET embedding        = data.embedding::jsonb,
+        embedding_model  = data.embedding_model,
+        last_updated     = data.last_updated::timestamptz
+    FROM (VALUES %s) AS data (doc_id, embedding, embedding_model, last_updated)
+    WHERE d.doc_id = data.doc_id
+    """
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            psycopg2.extras.execute_values(cur, sql, rows)
         c.commit()
     finally:
         if owns_conn:
