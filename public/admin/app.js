@@ -121,43 +121,65 @@ function toISODate(d) {
 function dateRangeFilterHtml(maxMonths, startDate, endDate, idPrefix) {
   return `
     <div class="date-range-filter" style="margin:0 0 16px; padding:10px 12px; border:1px solid #e2e2e2; border-radius:6px; background:#fafafa;">
-      <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-        <strong>기간별 조회조건</strong>
-        <span class="muted">(최대 ${maxMonths}개월)</span>
-        <input type="date" id="${idPrefix}-start" value="${startDate || ""}">
-        <span>~</span>
-        <input type="date" id="${idPrefix}-end" value="${endDate || ""}">
-        <button id="${idPrefix}-search-btn" class="btn btn-secondary">조회</button>
-        <button id="${idPrefix}-reset-btn" class="btn btn-secondary">초기화</button>
+      <div style="display:flex; align-items:center; gap:8px; flex-wrap:nowrap; overflow-x:auto; white-space:nowrap;">
+        <strong style="flex-shrink:0;">기간별 조회조건</strong>
+        <span class="muted" style="flex-shrink:0;">(최대 ${maxMonths}개월)</span>
+        <input type="date" id="${idPrefix}-start" value="${startDate || ""}" style="width:140px; flex-shrink:0;">
+        <span style="flex-shrink:0;">~</span>
+        <input type="date" id="${idPrefix}-end" value="${endDate || ""}" style="width:140px; flex-shrink:0;">
+        <button id="${idPrefix}-search-btn" class="btn btn-secondary" style="flex-shrink:0;">조회</button>
+        <button id="${idPrefix}-reset-btn" class="btn btn-secondary" style="flex-shrink:0;">초기화</button>
+        <span class="muted" style="margin-left:8px; flex-shrink:0;">
+          ${startDate && endDate ? `현재 조회 중: ${startDate} ~ ${endDate}` : "현재 전체 기간 조회 중"}
+        </span>
       </div>
-      <div id="${idPrefix}-error" class="error-text" style="margin-top:6px;"></div>
     </div>
   `;
 }
 
 function bindDateRangeFilter(idPrefix, maxMonths, onSearch, onReset) {
-  const errorEl = document.getElementById(`${idPrefix}-error`);
-  document.getElementById(`${idPrefix}-search-btn`).addEventListener("click", () => {
+  const searchBtn = document.getElementById(`${idPrefix}-search-btn`);
+  const resetBtn = document.getElementById(`${idPrefix}-reset-btn`);
+  searchBtn.addEventListener("click", async () => {
     const startVal = document.getElementById(`${idPrefix}-start`).value;
     const endVal = document.getElementById(`${idPrefix}-end`).value;
-    errorEl.textContent = "";
     if (!startVal || !endVal) {
-      errorEl.textContent = "시작일과 종료일을 모두 입력해주세요.";
+      alert("시작일과 종료일을 모두 입력해주세요.");
       return;
     }
     if (startVal > endVal) {
-      errorEl.textContent = "시작일은 종료일보다 늦을 수 없습니다.";
+      alert("시작일은 종료일보다 늦을 수 없습니다.");
       return;
     }
     const maxEnd = toISODate(addMonthsLocal(startVal, maxMonths));
     if (endVal > maxEnd) {
-      errorEl.textContent = `최대 ${maxMonths}개월까지 조회할 수 있습니다.`;
+      alert(`최대 ${maxMonths}개월까지 조회할 수 있습니다.`);
       return;
     }
-    onSearch(startVal, endVal);
+    searchBtn.disabled = true;
+    resetBtn.disabled = true;
+    searchBtn.innerHTML = `<span class="spinner"></span> 조회 중...`;
+    try {
+      await onSearch(startVal, endVal);
+    } catch (err) {
+      alert("조회 중 오류가 발생했습니다: " + err.message);
+      searchBtn.disabled = false;
+      resetBtn.disabled = false;
+      searchBtn.textContent = "조회";
+    }
   });
-  document.getElementById(`${idPrefix}-reset-btn`).addEventListener("click", () => {
-    onReset();
+  resetBtn.addEventListener("click", async () => {
+    searchBtn.disabled = true;
+    resetBtn.disabled = true;
+    resetBtn.innerHTML = `<span class="spinner"></span> 초기화 중...`;
+    try {
+      await onReset();
+    } catch (err) {
+      alert("초기화 중 오류가 발생했습니다: " + err.message);
+      searchBtn.disabled = false;
+      resetBtn.disabled = false;
+      resetBtn.textContent = "초기화";
+    }
   });
 }
 
@@ -213,7 +235,7 @@ async function renderDailyCounts(main, page = 0, startDate = null, endDate = nul
   ).join("");
   const hasMore = data.daily_counts.length === limit;
   main.innerHTML = `<h1>일별 질의/응답 건수</h1>` + cardWithDetail(
-    "날짜별 집계 (한 번에 최대 30건)",
+    "날짜별 집계",
     "최근 날짜부터 날짜별로 집계한 결과입니다. (자료가 최고 1년을 보관하고 이후 자동삭제 되어, 1년이 지난 건은 집계에서 빠집니다.)",
     "매일 챗봇에 들어온 질문 수를 날짜별로 보여줍니다. 운영 추이를 파악하는 데 사용합니다.",
     dateRangeFilterHtml(maxMonths, startDate, endDate, "daily-counts-filter")
@@ -224,6 +246,8 @@ async function renderDailyCounts(main, page = 0, startDate = null, endDate = nul
         <button id="daily-counts-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
         <span>페이지 ${page + 1}</span>
         <button id="daily-counts-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
+        <span class="muted" style="flex:1; text-align:center;">(최대 30건/1페이지)</span>
+        <button id="daily-counts-first" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>처음 페이지로 이동</button>
       </div>`
   );
   bindAccordions(main);
@@ -236,6 +260,9 @@ async function renderDailyCounts(main, page = 0, startDate = null, endDate = nul
   });
   document.getElementById("daily-counts-more").addEventListener("click", () => {
     renderDailyCounts(main, page + 1, startDate, endDate);
+  });
+  document.getElementById("daily-counts-first").addEventListener("click", () => {
+    renderDailyCounts(main, 0, startDate, endDate);
   });
 }
 
@@ -254,7 +281,7 @@ async function renderQaLogs(main, page = 0, startDate = null, endDate = null) {
   `).join("");
   const hasMore = data.logs.length === limit;
   main.innerHTML = `<h1>질의-답변 연계조회</h1>` + cardWithDetail(
-    "최근 질의-답변 (한 번에 최대 30건)",
+    "최근 질의-답변",
     "사용자 질문과 챗봇 답변을 함께 보여줍니다. (이 자료는 최고 1년을 보관하고, 이후 자동삭제 됩니다.)",
     "사용자의 질문과 챗봇이 실제로 보낸 답변을 짝지어 확인할 수 있는 화면입니다.",
     dateRangeFilterHtml(maxMonths, startDate, endDate, "qa-logs-filter")
@@ -265,6 +292,8 @@ async function renderQaLogs(main, page = 0, startDate = null, endDate = null) {
         <button id="qa-logs-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
         <span>페이지 ${page + 1}</span>
         <button id="qa-logs-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
+        <span class="muted" style="flex:1; text-align:center;">(최대 30건/1페이지)</span>
+        <button id="qa-logs-first" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>처음 페이지로 이동</button>
       </div>`
   );
   bindAccordions(main);
@@ -277,6 +306,9 @@ async function renderQaLogs(main, page = 0, startDate = null, endDate = null) {
   });
   document.getElementById("qa-logs-more").addEventListener("click", () => {
     renderQaLogs(main, page + 1, startDate, endDate);
+  });
+  document.getElementById("qa-logs-first").addEventListener("click", () => {
+    renderQaLogs(main, 0, startDate, endDate);
   });
 }
 
@@ -312,6 +344,8 @@ async function renderActionList(endpoint, title, subtitle, page = 0, startDate =
         <button id="action-list-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
         <span>페이지 ${page + 1}</span>
         <button id="action-list-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
+        <span class="muted" style="flex:1; text-align:center;">(최대 30건/1페이지)</span>
+        <button id="action-list-first" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>처음 페이지로 이동</button>
       </div>`
   );
   bindAccordions(main);
@@ -324,6 +358,9 @@ async function renderActionList(endpoint, title, subtitle, page = 0, startDate =
   });
   document.getElementById("action-list-more").addEventListener("click", () => {
     renderActionList(endpoint, title, subtitle, page + 1, startDate, endDate);
+  });
+  document.getElementById("action-list-first").addEventListener("click", () => {
+    renderActionList(endpoint, title, subtitle, 0, startDate, endDate);
   });
 
   main.querySelectorAll("[data-resolve]").forEach((btn) => {
@@ -343,9 +380,10 @@ async function renderFailureReport(main, startDate = null, endDate = null) {
   const maxMonths = 12;
   const dateQuery = (startDate && endDate) ? `?start_date=${startDate}&end_date=${endDate}` : "";
   const data = await api(`/actions/failure-report${dateQuery}`);
+  const total = Object.values(data.counts).reduce((sum, cnt) => sum + cnt, 0);
   const rows = Object.entries(data.counts).map(
     ([cause, cnt]) => `<tr><td>${escapeHtml(cause)}</td><td>${cnt}</td></tr>`
-  ).join("");
+  ).join("") + `<tr><td><strong>합계</strong></td><td><strong>${total}</strong></td></tr>`;
   main.innerHTML = `<h1>원인별 집계 리포트</h1>` + cardWithDetail(
     "실패 원인별 집계",
     "최근 1년간 누적된 건수입니다. (자료가 최고 1년을 보관하고 이후 자동삭제 되어, 1년이 지난 건은 집계에서 빠집니다.)",
