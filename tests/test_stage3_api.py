@@ -113,7 +113,7 @@ class TestChatApi:
         }
 
     def test_question_too_long_returns_400(self, client):
-        res = client.post("/", json={"question": "가" * 501, "session_id": "session-1"})
+        res = client.post("/api/chat", json={"question": "가" * 501, "session_id": "session-1"})
         assert res.status_code == 400
         self.fake_engine.handle_question.assert_not_called()
 
@@ -123,7 +123,7 @@ class TestChatApi:
         for _ in range(10):
             insert_qa_log(self._make_log_entry(session_id), self.pg_conn)
 
-        res = client.post("/", json={"question": "수당 지급 기준이 뭐예요?", "session_id": session_id})
+        res = client.post("/api/chat", json={"question": "수당 지급 기준이 뭐예요?", "session_id": session_id})
         assert res.status_code == 429
         self.fake_engine.handle_question.assert_not_called()
 
@@ -131,7 +131,7 @@ class TestChatApi:
         self.fake_engine.handle_question.return_value = MagicMock(
             answer="수당은 매월 말일 지급됩니다.", deep_link="https://notion.so/abc#123",
         )
-        res = client.post("/", json={"question": "수당 언제 들어와요?", "session_id": "session-ok"})
+        res = client.post("/api/chat", json={"question": "수당 언제 들어와요?", "session_id": "session-ok"})
         assert res.status_code == 200
         body = res.json()
         assert body["answer"] == "수당은 매월 말일 지급됩니다."
@@ -139,11 +139,11 @@ class TestChatApi:
 
     def test_empty_question_returns_400(self, client):
         self.fake_engine.handle_question.side_effect = ValueError("질문이 비어있습니다.")
-        res = client.post("/", json={"question": "", "session_id": "session-empty"})
+        res = client.post("/api/chat", json={"question": "", "session_id": "session-empty"})
         assert res.status_code == 400
 
     def test_internal_error_returns_500_without_leaking_detail(self, client):
         self.fake_engine.handle_question.side_effect = ConnectionError("anthropic api down")
-        res = client.post("/", json={"question": "수당 지급 기준이 뭐예요?", "session_id": "session-err"})
+        res = client.post("/api/chat", json={"question": "수당 지급 기준이 뭐예요?", "session_id": "session-err"})
         assert res.status_code == 500
         assert "anthropic api down" not in res.text

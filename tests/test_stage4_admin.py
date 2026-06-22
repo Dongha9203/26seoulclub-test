@@ -356,9 +356,10 @@ class TestQaLogAggregation:
 
     def test_get_failure_cause_counts(self, pg_conn):
         from storage.supabase_store import insert_qa_log, get_failure_cause_counts
+        before = get_failure_cause_counts(conn=pg_conn)
         insert_qa_log(_make_log_entry(failure_cause="정책밖요청"), pg_conn)
         counts = get_failure_cause_counts(conn=pg_conn)
-        assert counts["정책밖요청"] == 1
+        assert counts["정책밖요청"] - before.get("정책밖요청", 0) == 1
 
     # ── 기간별 조회조건 (날짜 범위 필터, KST 기준) ──────────────────
 

@@ -117,12 +117,14 @@ class TestSupabaseStore:
                             title=title, content=content)
 
     def test_upsert_and_get(self, pg_conn):
+        # 공유 운영 DB라 get_all()에는 실제 KB 문서도 같이 섞여 나오므로,
+        # 전체 건수가 아니라 이번에 넣은 doc_id가 정확히 1건 있는지로 검증합니다.
         from storage.supabase_store import upsert_document, get_all
         doc = self._make_doc()
         upsert_document(doc, pg_conn)
         all_docs = get_all(pg_conn)
-        assert len(all_docs) == 1
-        assert all_docs[0].doc_id == doc.doc_id
+        matches = [d for d in all_docs if d.doc_id == doc.doc_id]
+        assert len(matches) == 1
 
     def test_upsert_updates_existing(self, pg_conn):
         from storage.supabase_store import upsert_document, get_all
@@ -131,37 +133,44 @@ class TestSupabaseStore:
         doc.title = "수정됨"
         upsert_document(doc, pg_conn)
         all_docs = get_all(pg_conn)
-        assert len(all_docs) == 1
-        assert all_docs[0].title == "수정됨"
+        matches = [d for d in all_docs if d.doc_id == doc.doc_id]
+        assert len(matches) == 1
+        assert matches[0].title == "수정됨"
 
     def test_upsert_many(self, pg_conn):
         from storage.supabase_store import upsert_documents, get_total_count
+        baseline = get_total_count(pg_conn)
         docs = [self._make_doc(title=f"제목{i}") for i in range(5)]
         count = upsert_documents(docs, pg_conn)
         assert count == 5
-        assert get_total_count(pg_conn) == 5
+        assert get_total_count(pg_conn) - baseline == 5
 
     def test_delete_by_source_origin(self, pg_conn):
         from storage.supabase_store import upsert_documents, delete_by_source_origin, get_all
-        docs = [self._make_doc(origin="a") for _ in range(3)]
-        other = [self._make_doc(origin="b") for _ in range(2)]
+        origin_a, origin_b = f"test-a-{uuid.uuid4()}", f"test-b-{uuid.uuid4()}"
+        docs = [self._make_doc(origin=origin_a) for _ in range(3)]
+        other = [self._make_doc(origin=origin_b) for _ in range(2)]
         upsert_documents(docs + other, pg_conn)
-        deleted = delete_by_source_origin("a", pg_conn)
+        deleted = delete_by_source_origin(origin_a, pg_conn)
         assert deleted == 3
-        remaining = get_all(pg_conn)
+        other_ids = {d.doc_id for d in other}
+        remaining = [d for d in get_all(pg_conn) if d.doc_id in other_ids]
         assert len(remaining) == 2
-        assert all(d.source_origin == "b" for d in remaining)
+        assert all(d.source_origin == origin_b for d in remaining)
 
     def test_get_by_source_type(self, pg_conn):
         from storage.supabase_store import upsert_documents, get_by_source_type
-        docs = [self._make_doc(source_type="notion", origin="FAQ") for _ in range(2)]
-        docs += [self._make_doc(source_type="pdf", origin="a.pdf") for _ in range(3)]
+        origin = f"test-{uuid.uuid4()}"
+        docs = [self._make_doc(source_type="notion", origin=origin) for _ in range(2)]
+        docs += [self._make_doc(source_type="pdf", origin=f"{origin}-pdf") for _ in range(3)]
         upsert_documents(docs, pg_conn)
         notion_docs = get_by_source_type("notion", pg_conn)
-        assert len(notion_docs) == 2
+        matches = [d for d in notion_docs if d.source_origin == origin]
+        assert len(matches) == 2
 
     def test_category_distribution(self, pg_conn):
         from storage.supabase_store import upsert_documents, get_category_distribution
+        before = get_category_distribution(pg_conn)
         docs = []
         for _ in range(3):
             d = self._make_doc()
@@ -172,9 +181,9 @@ class TestSupabaseStore:
             d.category = "미분류"
             docs.append(d)
         upsert_documents(docs, pg_conn)
-        dist = get_category_distribution(pg_conn)
-        assert dist["신청 자격 안내"] == 3
-        assert dist["미분류"] == 2
+        after = get_category_distribution(pg_conn)
+        assert after["신청 자격 안내"] - before.get("신청 자격 안내", 0) == 3
+        assert after["미분류"] - before.get("미분류", 0) == 2
 
     def test_sync_metadata_upsert_and_get(self, pg_conn):
         from storage.supabase_store import upsert_sync_metadata, get_sync_metadata
@@ -216,9 +225,10 @@ class TestSupabaseStore:
 
     def test_empty_upsert_many(self, pg_conn):
         from storage.supabase_store import upsert_documents, get_total_count
+        baseline = get_total_count(pg_conn)
         count = upsert_documents([], pg_conn)
         assert count == 0
-        assert get_total_count(pg_conn) == 0
+        assert get_total_count(pg_conn) == baseline
 
 
 # ══════════════════════════════════════════════════════════════
@@ -1013,10 +1023,11 @@ class TestEndToEnd:
         path = tmp_path / "data.xlsx"
         wb.save(str(path))
 
+        baseline = get_total_count(pg_conn)
         docs = collect_excel(str(path))
         upsert_documents(docs, pg_conn)
 
-        assert get_total_count(pg_conn) == 1
+        assert get_total_count(pg_conn) - baseline == 1
 
     def test_category_distribution_after_import(self, tmp_path, pg_conn):
         from docx import Document as DocxDocument

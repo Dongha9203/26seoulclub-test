@@ -187,14 +187,16 @@ class TestSupabaseStoreEmbeddings:
         initialize_db(pg_conn)  # 두 번째 호출도 에러 없이 통과해야 함
 
     def test_update_embedding_and_get_all_with_embeddings_roundtrip(self, pg_conn, sample_doc):
+        # 공유 운영 DB라 get_all_with_embeddings()는 실제 KB 문서도 함께 반환하므로,
+        # 전체 건수가 아니라 이번에 넣은 doc_id 항목만 골라서 검증합니다.
         from storage.supabase_store import upsert_document, update_embedding, get_all_with_embeddings
         upsert_document(sample_doc, pg_conn)
         update_embedding(sample_doc.doc_id, [0.1, 0.2, 0.3], "voyage-4", pg_conn)
 
         results = get_all_with_embeddings("voyage-4", pg_conn)
-        assert len(results) == 1
-        doc, embedding = results[0]
-        assert doc.doc_id == sample_doc.doc_id
+        matches = [r for r in results if r[0].doc_id == sample_doc.doc_id]
+        assert len(matches) == 1
+        doc, embedding = matches[0]
         assert embedding == [0.1, 0.2, 0.3]
 
     def test_get_all_with_embeddings_invalidates_on_model_change(self, pg_conn, sample_doc):
@@ -203,7 +205,9 @@ class TestSupabaseStoreEmbeddings:
         update_embedding(sample_doc.doc_id, [0.1, 0.2, 0.3], "voyage-3", pg_conn)
 
         results = get_all_with_embeddings("voyage-4", pg_conn)  # 다른 모델로 조회
-        doc, embedding = results[0]
+        matches = [r for r in results if r[0].doc_id == sample_doc.doc_id]
+        assert len(matches) == 1
+        doc, embedding = matches[0]
         assert embedding is None
 
     def test_get_documents_missing_embedding(self, pg_conn, sample_doc):
@@ -217,9 +221,15 @@ class TestSupabaseStoreEmbeddings:
         missing_after = get_documents_missing_embedding("voyage-4", pg_conn)
         assert len(missing_after) == 0
 
-    def test_get_all_with_embeddings_empty_db(self, pg_conn):
+    def test_get_all_with_embeddings_empty_db(self):
+        # 실제 운영 DB의 documents에는 이미 데이터가 쌓여 있어 "빈 테이블"을
+        # 실제 DB로 재현할 수 없으므로 cursor를 mock하여 빈 결과 분기를 검증합니다.
         from storage.supabase_store import get_all_with_embeddings
-        assert get_all_with_embeddings("voyage-4", pg_conn) == []
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.return_value = []
+        mock_conn = MagicMock()
+        mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
+        assert get_all_with_embeddings("voyage-4", mock_conn) == []
 
 
 # ══════════════════════════════════════════════════════════════
