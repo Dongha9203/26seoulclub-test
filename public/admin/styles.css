@@ -196,9 +196,10 @@ button:disabled { cursor: default; opacity: 0.6; }
 
 /* ── 표 ─────────────────────────────────────────────────────── */
 
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; margin-bottom: 4px; }
 table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--color-border); }
-th { color: var(--color-text-muted); font-weight: 600; }
+th { color: var(--color-text-muted); font-weight: 600; white-space: nowrap; }
 
 /* ── 배지 ───────────────────────────────────────────────────── */
 
@@ -243,10 +244,38 @@ input:focus, select:focus, textarea:focus {
   font-weight: 600;
   background: var(--color-accent);
   color: #fff;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 .btn:hover { background: #1d4ed8; }
 .btn.btn-secondary { background: var(--color-bg); color: var(--color-text); border: 1px solid var(--color-border); }
 .btn.btn-danger { background: var(--color-danger); }
+
+/* ── 기간별 조회조건 ────────────────────────────────────────── */
+
+.date-range-filter .date-range-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+/* ── 페이지네이션 ───────────────────────────────────────────── */
+
+.pagination-row {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.pagination-row .pagination-info {
+  flex: 1 1 160px;
+  text-align: center;
+  white-space: nowrap;
+}
 
 /* ── 키워드 칩 (분류 키워드 관리) ─────────────────────────────── */
 
@@ -342,4 +371,10 @@ input:focus, select:focus, textarea:focus {
   .nav-divider { display: none; }
   .nav-item { white-space: nowrap; }
   #main { padding: 16px; }
+
+  .date-range-filter .date-range-row {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    white-space: normal;
+  }
 }

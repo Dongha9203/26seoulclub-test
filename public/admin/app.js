@@ -121,7 +121,7 @@ function toISODate(d) {
 function dateRangeFilterHtml(maxMonths, startDate, endDate, idPrefix) {
   return `
     <div class="date-range-filter" style="margin:0 0 16px; padding:10px 12px; border:1px solid #e2e2e2; border-radius:6px; background:#fafafa;">
-      <div style="display:flex; align-items:center; gap:8px; flex-wrap:nowrap; overflow-x:auto; white-space:nowrap;">
+      <div class="date-range-row">
         <strong style="flex-shrink:0;">기간별 조회조건</strong>
         <span class="muted" style="flex-shrink:0;">(최대 ${maxMonths}개월)</span>
         <input type="date" id="${idPrefix}-start" value="${startDate || ""}" style="width:140px; flex-shrink:0;">
@@ -240,13 +240,13 @@ async function renderDailyCounts(main, page = 0, startDate = null, endDate = nul
     "매일 챗봇에 들어온 질문 수를 날짜별로 보여줍니다. 운영 추이를 파악하는 데 사용합니다.",
     dateRangeFilterHtml(maxMonths, startDate, endDate, "daily-counts-filter")
     + (data.daily_counts.length
-      ? `<table><thead><tr><th>날짜</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<div class="table-scroll"><table><thead><tr><th>날짜</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table></div>`
       : `<p class="muted">데이터가 없습니다.</p>`)
-    + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
+    + `<div class="pagination-row">
         <button id="daily-counts-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
         <span>페이지 ${page + 1}</span>
         <button id="daily-counts-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
-        <span class="muted" style="flex:1; text-align:center;">(최대 30건/1페이지)</span>
+        <span class="muted pagination-info">(최대 30건/1페이지)</span>
         <button id="daily-counts-first" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>처음 페이지로 이동</button>
       </div>`
   );
@@ -286,13 +286,13 @@ async function renderQaLogs(main, page = 0, startDate = null, endDate = null) {
     "사용자의 질문과 챗봇이 실제로 보낸 답변을 짝지어 확인할 수 있는 화면입니다.",
     dateRangeFilterHtml(maxMonths, startDate, endDate, "qa-logs-filter")
     + (data.logs.length
-      ? `<table><thead><tr><th>시각</th><th>질문</th><th>답변</th><th>실패원인</th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<div class="table-scroll"><table><thead><tr><th>시각</th><th>질문</th><th>답변</th><th>실패원인</th></tr></thead><tbody>${rows}</tbody></table></div>`
       : `<p class="muted">아직 기록된 로그가 없습니다.</p>`)
-    + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
+    + `<div class="pagination-row">
         <button id="qa-logs-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
         <span>페이지 ${page + 1}</span>
         <button id="qa-logs-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
-        <span class="muted" style="flex:1; text-align:center;">(최대 30건/1페이지)</span>
+        <span class="muted pagination-info">(최대 30건/1페이지)</span>
         <button id="qa-logs-first" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>처음 페이지로 이동</button>
       </div>`
   );
@@ -338,13 +338,13 @@ async function renderActionList(endpoint, title, subtitle, page = 0, startDate =
     + "(일별 질의/응답 건수, 원인별 집계 리포트 등 통계에는 계속 남습니다 — 이 목록에서만 사라집니다).",
     dateRangeFilterHtml(maxMonths, startDate, endDate, "action-list-filter")
     + (data.logs.length
-      ? `<table><thead><tr><th>시각</th><th>질문</th><th>실패원인</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+      ? `<div class="table-scroll"><table><thead><tr><th>시각</th><th>질문</th><th>실패원인</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
       : `<p class="muted">해당 조건에 해당하는 항목이 없습니다.</p>`)
-    + `<div class="pagination-row" style="margin-top:14px; display:flex; align-items:center; gap:10px;">
+    + `<div class="pagination-row">
         <button id="action-list-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
         <span>페이지 ${page + 1}</span>
         <button id="action-list-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
-        <span class="muted" style="flex:1; text-align:center;">(최대 30건/1페이지)</span>
+        <span class="muted pagination-info">(최대 30건/1페이지)</span>
         <button id="action-list-first" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>처음 페이지로 이동</button>
       </div>`
   );
@@ -396,7 +396,7 @@ async function renderFailureReport(main, startDate = null, endDate = null) {
       <li><strong>API오류</strong> — 검색이나 질문 자체와는 무관하게, Claude API 호출이 일시적으로 실패해서(서버 과부하, 네트워크 오류 등) 답변을 만들지 못하고 운영팀 연락처를 안내한 경우입니다. 가끔 한두 건 보이는 건 정상이지만, 짧은 시간에 건수가 많이 쌓이면 API 사용량/네트워크 상태를 확인해 보세요.</li>
     </ul>`,
     dateRangeFilterHtml(maxMonths, startDate, endDate, "failure-report-filter")
-    + `<table><thead><tr><th>원인</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table>`
+    + `<div class="table-scroll"><table><thead><tr><th>원인</th><th>건수</th></tr></thead><tbody>${rows}</tbody></table></div>`
   );
   bindAccordions(main);
   bindDateRangeFilter("failure-report-filter", maxMonths,
@@ -493,7 +493,7 @@ async function renderKb(main) {
     ` + cardWithDetail(
       "전체 문서 목록", "노션 소스는 조회 전용이며 삭제 버튼이 비활성화됩니다.",
       `수동 업로드 가능한 소스 타입별 처리 방식:
-       <table><thead><tr><th>소스 타입</th><th>처리 방식</th></tr></thead><tbody>${guideRows}</tbody></table>
+       <div class="table-scroll"><table><thead><tr><th>소스 타입</th><th>처리 방식</th></tr></thead><tbody>${guideRows}</tbody></table></div>
        <p style="margin-top:10px;">파일 업로드나 구글 스프레드시트로 추가한 문서는 목록에 바로 보이지만, "갱신" 버튼을 눌러 확인해줘야 챗봇이 실제로 그 내용을 찾아 답변할 수 있습니다.</p>
        <p style="margin-top:10px;">검색 정확도를 높이기 위해, 소제목 스타일이 없는 긴 문서(800자 이상)는 파일 1개를 업로드해도 "(파트 1)", "(파트 2)"처럼 여러 건으로 자동 분할되어 등록됩니다. 같은 출처(파일명)로 여러 줄이 보이는 건 오류가 아니라 정상 동작입니다.</p>
        <p style="margin-top:10px;">구글 스프레드시트는 시트의 행(row) 1개가 문서 1개로 등록됩니다. 시트에 10개 행이 있으면 문서도 10건 등록되는 게 정상이며, 각 문서의 제목은 시트의 "질문/제목" 컬럼 값을 그대로 사용합니다.</p>`,
@@ -518,7 +518,7 @@ async function renderKb(main) {
         <span id="kb-embed-all-result"></span>
       </div>
       ${docs.documents.length
-        ? `<table><thead><tr><th>제목</th><th>유형</th><th>출처</th><th>카테고리</th><th></th></tr></thead><tbody>${rows}</tbody></table>`
+        ? `<div class="table-scroll"><table><thead><tr><th>제목</th><th>유형</th><th>출처</th><th>카테고리</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
         : `<p class="muted">등록된 문서가 없습니다.</p>`}
       `
     );
