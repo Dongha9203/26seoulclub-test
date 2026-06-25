@@ -5,5 +5,15 @@
       "path": "/api/cron/sync_notion",
       "schedule": "0 19 * * *"
     }
+  ],
+  "rewrites": [
+    {
+      "source": "/admin",
+      "destination": "/admin/login.html"
+    },
+    {
+      "source": "/admin/login",
+      "destination": "/admin/login.html"
+    }
   ]
 }
