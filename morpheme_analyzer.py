@@ -27,6 +27,14 @@ _MIN_FORM_LEN = 1
 _CONTENTLESS_VERB_STEMS = {"하", "있", "없", "되", "같"}
 _VERB_TAGS = {"VV", "VA", "VX"}
 
+# 영문 외래어와 그 한글 동의어를 BM25 검색에서 같은 키워드로 취급하기 위한 매핑.
+# 노션 문서 제목/본문에 "LIST" 같은 영문이 쓰여도 사용자가 "목록"으로 질문하면
+# 형태소만으로는 토큰이 전혀 겹치지 않아 검색에서 누락되는 문제를 해결합니다.
+# 키워드 추출 후 매칭되는 영문 토큰이 있으면 한글 동의어를 추가로 포함시킵니다.
+_ENGLISH_KOREAN_SYNONYMS = {
+    "list": "목록",
+}
+
 _kiwi: Kiwi = None
 
 
@@ -53,6 +61,12 @@ def extract_keywords(text: str) -> List[str]:
         if t.tag in _KEEP_TAGS and len(t.form) >= _MIN_FORM_LEN
         and not (t.tag in _VERB_TAGS and t.form in _CONTENTLESS_VERB_STEMS)
     ]
+
+    for kw in list(keywords):
+        synonym = _ENGLISH_KOREAN_SYNONYMS.get(kw.lower())
+        if synonym and synonym not in keywords:
+            keywords.append(synonym)
+
     return keywords
 
 

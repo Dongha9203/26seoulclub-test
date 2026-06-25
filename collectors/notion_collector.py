@@ -31,7 +31,8 @@ HEADING_TYPES = {"heading_1", "heading_2", "heading_3"}
 MAX_NESTING_DEPTH = 5
 
 # 레이아웃 전용 컨테이너: 자신은 버리고 자식만 펼칩니다 (own text 없음).
-TRANSPARENT_CONTAINER_TYPES = {"column_list", "column", "synced_block"}
+# table은 자신은 텍스트가 없고 실제 내용은 자식 table_row에 있어 여기 포함합니다.
+TRANSPARENT_CONTAINER_TYPES = {"column_list", "column", "synced_block", "table"}
 # 자체 텍스트가 있을 수 있는 컨테이너: 자신은 남기고 자식도 이어붙입니다.
 TEXT_CONTAINER_TYPES = {"callout"}
 
@@ -40,12 +41,46 @@ TEXT_CONTAINER_TYPES = {"callout"}
 # 내부 헬퍼
 # ---------------------------------------------------------------------------
 
+def _rich_text_plain(rich_texts: List[dict]) -> str:
+    """rich_text 배열을 plain text로 합칩니다.
+
+    보이는 글자와 실제 하이퍼링크가 다른 경우(예: "최종 활동계획 제출(클릭)"라는
+    글자 뒤에 Airtable 폼 링크가 숨어있는 흔한 패턴), plain_text만 모으면 그
+    링크 자체가 통째로 사라집니다. href가 있고 글자 안에 이미 포함돼 있지 않으면
+    괄호로 덧붙여 링크가 검색/답변에서 살아남게 합니다.
+    """
+    parts = []
+    for rt in rich_texts:
+        text = rt.get("plain_text", "")
+        href = rt.get("href")
+        if href and href not in text:
+            text = f"{text} ({href})" if text else href
+        parts.append(text)
+    return "".join(parts)
+
+
 def _extract_text(block: dict) -> str:
-    """블록의 rich_text를 plain text로 추출합니다."""
+    """블록에서 검색 가능한 텍스트를 추출합니다.
+
+    - table_row: 일반 블록과 달리 rich_text가 셀 단위 2차원 배열(cells)로 들어있어
+      따로 처리합니다.
+    - embed/bookmark/link_preview처럼 rich_text가 없고 url만 있는 블록(Airtable 등
+      외부 서비스 임베드)은 내용을 직접 읽을 수 없으므로, 대신 그 링크를 텍스트로
+      남겨 검색에 걸리게 합니다 ("관련 링크: https://...").
+    """
     block_type = block.get("type", "")
     type_data = block.get(block_type, {})
+
+    if block_type == "table_row":
+        cells = type_data.get("cells", [])
+        return " | ".join(_rich_text_plain(cell) for cell in cells if cell)
+
     rich_texts = type_data.get("rich_text", [])
-    return "".join(rt.get("plain_text", "") for rt in rich_texts)
+    text = _rich_text_plain(rich_texts)
+    if not text and "url" in type_data:
+        caption = _rich_text_plain(type_data.get("caption", []))
+        text = f"{caption}: {type_data['url']}" if caption else f"관련 링크: {type_data['url']}"
+    return text
 
 
 def _fetch_all_blocks(client: Client, block_id: str) -> List[dict]:
@@ -253,7 +288,11 @@ def _chunk_fallback(
     full_text = "\n".join(all_parts)
 
     if not full_text.strip():
-        return []
+        # 이미지/표처럼 텍스트를 전혀 추출할 수 없는 블록만 있는 페이지도, 페이지
+        # 제목으로는 검색에서 찾아 노션 딥링크로 안내할 수 있어야 합니다. 본문이
+        # 없다고 Document 자체를 만들지 않으면 그 페이지는 영구히 검색에서
+        # 누락됩니다 (실제 발견된 사례: 본문이 일정표 이미지 1장뿐인 페이지).
+        return [_make_document(source_origin, source_origin, "", notion_page_url, blocks[0]["id"])]
 
     if len(full_text) <= FALLBACK_CHUNK_SIZE:
         doc = _make_document(source_origin, source_origin, full_text,

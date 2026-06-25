@@ -564,7 +564,12 @@ class TestNotionCollector:
         mock_client.pages.retrieve.return_value = {"url": None, "public_url": None}
 
         docs = collect_notion_page(mock_client, "top-1", "메인페이지", "https://example.notion.site/top-1")
-        assert docs == []  # 본문 없는 callout + 조회 실패한 하위페이지뿐이므로 빈 결과
+        # 본문 없는 callout뿐이라도 페이지 자체는 제목만으로 최소 1개 Document가 남고
+        # (텍스트가 전혀 없는 페이지가 검색에서 영구히 사라지지 않도록), 조회 실패한
+        # 하위페이지("접근불가 페이지")만 건너뛰어 그 문서는 생성되지 않는다.
+        assert len(docs) == 1
+        assert docs[0].title == "메인페이지"
+        assert all(d.title != "접근불가 페이지" for d in docs)
 
     def test_sync_notion_pages_skips_placeholder(self):
         """URL이 플레이스홀더이면 건너뜀."""
