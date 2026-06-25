@@ -121,7 +121,7 @@ def call_claude(client: anthropic.Anthropic, model: str, system_prompt: str,
     """Claude API를 1회 호출해 (answer, sentiment_score, resolution_status)를 반환합니다."""
     response = client.messages.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
         system=system_prompt,
         messages=[{"role": "user", "content": question}],
         tools=[ANSWER_TOOL],
@@ -168,7 +168,7 @@ def call_claude_stream(client: anthropic.Anthropic, model: str, system_prompt: s
     emitted = ""
     with client.messages.stream(
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
         system=system_prompt,
         messages=[{"role": "user", "content": question}],
         tools=[ANSWER_TOOL],
