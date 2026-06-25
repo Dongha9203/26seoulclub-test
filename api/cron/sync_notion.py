@@ -40,11 +40,12 @@ _QA_LOG_RETENTION_DAYS = 365
 def _perform_incremental_sync() -> dict:
     """변경된 노션 페이지만 재수집 (cron 전용 로직)."""
     import json as _json
+    from api.sync_notion import _sync_calendars
     from collectors.notion_collector import sync_notion_pages_incremental
     from embedding_manager import get_embedding_provider, backfill_embeddings
     from storage.supabase_store import (
-        get_connection, initialize_db, delete_by_source_origins, upsert_documents, delete_old_qa_logs,
-        get_documents_missing_embedding,
+        get_connection, initialize_db, get_by_source_origins, sync_documents_incrementally,
+        delete_old_qa_logs, get_documents_missing_embedding,
     )
     from utils.validators import validate_notion_block_ids
 
@@ -60,31 +61,46 @@ def _perform_incremental_sync() -> dict:
 
         docs, summary = sync_notion_pages_incremental(config, conn=conn)
 
-        # 재귀로 발견되는 하위 페이지도 각자 고유한 source_origin을 가지므로, 이번에
-        # 실제로 재수집된 모든 source_origin을 기준으로 기존 Document를 지웁니다.
-        # source_origin별로 반복 삭제하지 않고 ANY(%s)로 한 번에 지워 라운드트립을 줄입니다.
-        deleted = delete_by_source_origins(list({d.source_origin for d in docs}), conn=conn)
-        logger.info("기존 Document 삭제: 총 %d건", deleted)
+        # sync_notion_pages_incremental은 메타데이터상 변경이 감지된 페이지만 재수집하므로
+        # docs는 그 페이지들의 source_origin만 포함합니다. 변경되지 않은 페이지는 비교 대상에서
+        # 빼야(=조회조차 하지 않아야) 그 문서들의 임베딩이 그대로 보존됩니다. 재수집된
+        # source_origin 범위 안에서만 기존 Document와 diff해 실제로 내용이 바뀐 chunk만
+        # 갱신하고, 그대로인 chunk는 임베딩을 보존합니다 (수동 "지금 갱신"과 동일한 방식).
+        changed_source_origins = list({d.source_origin for d in docs})
+        existing_docs = get_by_source_origins(changed_source_origins, conn=conn) if changed_source_origins else []
+        changed_docs, deleted = sync_documents_incrementally(existing_docs, docs, conn=conn)
+        logger.info("노션 incremental 동기화: 변경 %d건, 삭제 %d건, 변경없음(보존) %d건",
+                    len(changed_docs), deleted, len(docs) - len(changed_docs))
 
-        inserted = upsert_documents(docs, conn=conn) if docs else 0
+        inserted = len(changed_docs)
         validation = validate_notion_block_ids(docs) if docs else {}
 
         sources: dict = {}
-        for d in docs:
+        for d in changed_docs:
             sources[d.source_origin] = sources.get(d.source_origin, 0) + 1
 
+        # 구글 캘린더도 매일 새벽 자동 갱신에 묶습니다 — 수동 "지금 갱신"
+        # (api/sync_notion.py)과 동일한 _sync_calendars를 그대로 재사용합니다.
+        calendar_docs, calendar_sources = _sync_calendars(config, conn)
+        docs.extend(calendar_docs)
+        inserted += len(calendar_docs)
+        sources.update(calendar_sources)
+
         # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 변경분이 바로
-        # 검색에 반영되도록, 여기서 임베딩이 없는 노션 문서를 자동으로 백필합니다.
+        # 검색에 반영되도록, 여기서 임베딩이 없는 노션/캘린더 문서를 자동으로 백필합니다.
         model = config.get("embedding_model")
         embedded, embed_failed = 0, 0
         try:
             provider = get_embedding_provider(config)
-            pending = [d for d in get_documents_missing_embedding(model, conn=conn) if d.source_type == "notion"]
+            pending = [
+                d for d in get_documents_missing_embedding(model, conn=conn)
+                if d.source_type in ("notion", "google_calendar")
+            ]
             embedded, embed_failed = backfill_embeddings(pending, provider, model, conn=conn)
         except Exception:
-            logger.exception("노션 문서 임베딩 백필 중 오류")
+            logger.exception("노션/캘린더 문서 임베딩 백필 중 오류")
         if embedded or embed_failed:
-            logger.info("노션 문서 임베딩 백필: %d건 성공, %d건 실패", embedded, embed_failed)
+            logger.info("노션/캘린더 문서 임베딩 백필: %d건 성공, %d건 실패", embedded, embed_failed)
 
         qa_log_purged = delete_old_qa_logs(_QA_LOG_RETENTION_DAYS, conn=conn)
         logger.info("보존기간(%d일) 초과 qa_log 삭제: %d건", _QA_LOG_RETENTION_DAYS, qa_log_purged)

@@ -5,6 +5,9 @@
     "faq": ""
   },
   "google_sheets": [],
+  "google_calendars": [
+    "https://calendar.google.com/calendar/embed?src=26seoulclub%40gmail.com&ctz=Asia%2FSeoul"
+  ],
   "embedding_model": "voyage-4",
   "llm_model": "claude-sonnet-4-6",
   "similarity_threshold": 0.55,

@@ -154,6 +154,66 @@ class TestEmbeddingManager:
         assert (embedded, failed) == (0, 0)
         fake_provider.embed_documents.assert_not_called()
 
+    def test_backfill_embeddings_rate_limit_splits_batch_and_recovers(self):
+        """미등록 Voyage 계정의 rate limit(전체 배치)에 걸리면, 절반으로 쪼갠
+        작은 배치는 통과해 결국 전부 성공해야 한다."""
+        import voyageai
+        from embedding_manager import backfill_embeddings
+        from models.document import Document
+
+        docs = [Document.new(source_type="notion", source_origin="a", title=f"t{i}", content="c")
+                for i in range(4)]
+
+        def fake_embed(texts):
+            if len(texts) == 4:
+                raise voyageai.error.RateLimitError("rate limited")
+            return [[0.1, 0.2]] * len(texts)
+
+        fake_provider = MagicMock()
+        fake_provider.embed_documents.side_effect = fake_embed
+
+        with patch("storage.supabase_store.update_embeddings_batch"), \
+             patch("embedding_manager.time.sleep") as fake_sleep:
+            embedded, failed = backfill_embeddings(docs, fake_provider, "voyage-4")
+
+        assert (embedded, failed) == (4, 0)
+        fake_sleep.assert_called_once()  # 첫 시도 실패 후 1번만 쪼개졌으면 충분히 통과함
+
+    def test_backfill_embeddings_rate_limit_gives_up_after_max_retries(self):
+        """계속 rate limit에 걸리면 무한정 쪼개고 기다리지 않고, 재시도 한도에서
+        포기하고 실패로 집계해야 한다 (서버리스 함수 실행 시간 제한 보호)."""
+        import voyageai
+        from embedding_manager import backfill_embeddings
+        from models.document import Document
+
+        docs = [Document.new(source_type="notion", source_origin="a", title=f"t{i}", content="c")
+                for i in range(4)]
+        fake_provider = MagicMock()
+        fake_provider.embed_documents.side_effect = voyageai.error.RateLimitError("rate limited")
+
+        with patch("storage.supabase_store.update_embeddings_batch") as fake_update, \
+             patch("embedding_manager.time.sleep"):
+            embedded, failed = backfill_embeddings(docs, fake_provider, "voyage-4")
+
+        assert (embedded, failed) == (0, 4)
+        fake_update.assert_not_called()
+
+    def test_backfill_embeddings_non_rate_limit_error_does_not_retry(self):
+        """rate limit이 아닌 일반 오류는 재시도해도 의미가 없으므로 즉시 실패 처리한다."""
+        from embedding_manager import backfill_embeddings
+        from models.document import Document
+
+        docs = [Document.new(source_type="notion", source_origin="a", title="t", content="c")]
+        fake_provider = MagicMock()
+        fake_provider.embed_documents.side_effect = ConnectionError("voyage api down")
+
+        with patch("storage.supabase_store.update_embeddings_batch"), \
+             patch("embedding_manager.time.sleep") as fake_sleep:
+            embedded, failed = backfill_embeddings(docs, fake_provider, "voyage-4")
+
+        assert (embedded, failed) == (0, 1)
+        fake_sleep.assert_not_called()
+
 
 # ══════════════════════════════════════════════════════════════
 # storage/supabase_store.py — 2단계 추가분 (임베딩 컬럼)

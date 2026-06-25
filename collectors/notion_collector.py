@@ -4,18 +4,26 @@ Notion 페이지 수집 모듈.
 적응형 청킹 전략 (매 수집 시마다 처음부터 적용):
   1단계 — toggle 우선 분리: toggle 블록 + 자식 전체 → 독립 Document
   2단계 — 나머지는 heading 단위 보완: heading_{1,2,3} 사이 블록 묶음 → Document
+           (본문이 FALLBACK_CHUNK_SIZE를 넘으면 문단 단위로 "(파트 N)" 분할)
   fallback — heading/toggle 모두 없으면 800자 단위 균등 분할 (경고 로그)
 
 하위 페이지 재귀 수집:
   column_list/column/synced_block처럼 레이아웃만 담당하는 컨테이너와 callout은
   내용을 펼쳐서 위 청킹 로직이 그대로 보게 하고, 그 안에서 발견되는 child_page는
   별도 페이지로 분리해 자신의 공개 URL을 다시 조회한 뒤 재귀적으로 수집합니다.
-  child_database(자료실 등)는 블록 API로 내용을 알 수 없어 현재는 건너뜁니다.
+
+child_database(자료실 등) 수집:
+  자료실 같은 child_database는 속성에 내용이 들어있지 않고, 각 행(row) 자신이
+  하나의 노션 페이지라 그 페이지 블록 안에 실제 내용이 있습니다. 그래서 행 각각을
+  child_page와 동일한 방식(collect_notion_page)으로 재귀 수집합니다. 단, 행
+  추가/삭제는 부모 페이지의 last_edited_time에 반영되지 않으므로, cron 증분
+  동기화에서는 한 번 발견한 데이터베이스를 구글 캘린더처럼 매번 직접 재조회합니다.
 """
 
 import logging
 import os
 import re
+import uuid
 from typing import List, Optional, Tuple
 
 from notion_client import Client
@@ -124,16 +132,18 @@ def _resolve_page_url(client: Client, page_id: str) -> Optional[str]:
 
 def _expand_blocks(
     client: Client, blocks: List[dict], depth: int = 0,
-) -> Tuple[List[dict], List[Tuple[str, str]]]:
+) -> Tuple[List[dict], List[Tuple[str, str]], List[Tuple[str, str]]]:
     """column_list/column/synced_block/callout을 펼쳐 청킹 로직이 보는 블록 목록을
-    만들고, 그 안에서 발견되는 child_page는 (id, title) 목록으로 따로 모아 반환합니다.
-    toggle/heading은 자신만 그대로 두고 자식은 펼치지 않습니다 — 그 자식들은 이미
-    `_chunk_page_blocks`/`_chunk_by_headings`가 각자의 방식으로 따라가기 때문입니다.
+    만들고, 그 안에서 발견되는 child_page/child_database는 각각 (id, title) 목록으로
+    따로 모아 반환합니다. toggle/heading은 자신만 그대로 두고 자식은 펼치지 않습니다
+    — 그 자식들은 이미 `_chunk_page_blocks`/`_chunk_by_headings`가 각자의 방식으로
+    따라가기 때문입니다.
     """
     expanded: List[dict] = []
     nested_pages: List[Tuple[str, str]] = []
+    nested_databases: List[Tuple[str, str]] = []
     if depth > MAX_NESTING_DEPTH:
-        return expanded, nested_pages
+        return expanded, nested_pages, nested_databases
 
     for block in blocks:
         btype = block["type"]
@@ -142,7 +152,7 @@ def _expand_blocks(
             nested_pages.append((block["id"], block.get("child_page", {}).get("title", "")))
             continue
         if btype == "child_database":
-            logger.info("child_database는 현재 수집 대상이 아닙니다. 건너뜁니다 (id=%s).", block["id"])
+            nested_databases.append((block["id"], block.get("child_database", {}).get("title", "")))
             continue
 
         if btype not in TRANSPARENT_CONTAINER_TYPES:
@@ -150,11 +160,12 @@ def _expand_blocks(
 
         if block.get("has_children") and btype in (TRANSPARENT_CONTAINER_TYPES | TEXT_CONTAINER_TYPES):
             children = _fetch_all_blocks(client, block["id"])
-            child_expanded, child_nested = _expand_blocks(client, children, depth + 1)
+            child_expanded, child_nested, child_databases = _expand_blocks(client, children, depth + 1)
             expanded.extend(child_expanded)
             nested_pages.extend(child_nested)
+            nested_databases.extend(child_databases)
 
-    return expanded, nested_pages
+    return expanded, nested_pages, nested_databases
 
 
 def _make_document(
@@ -163,7 +174,15 @@ def _make_document(
     content: str,
     notion_page_url: str,
     notion_block_id: Optional[str],
+    part_index: int = 0,
 ) -> Document:
+    """notion_block_id가 있으면 (block_id + part_index) 기준으로 고정된 doc_id를
+    부여합니다. notion_block_id는 노션이 부여한 전역 고유 UUID라 매번 같은 블록은
+    같은 doc_id가 되어, incremental 동기화(내용이 안 바뀐 문서는 임베딩 보존)가
+    가능해집니다. 한 블록이 여러 파트로 쪼개질 때만(긴 heading/fallback 청킹)
+    part_index가 0이 아니게 됩니다 — 같은 block_id라도 파트별로 다른 doc_id가
+    필요하기 때문입니다. block_id가 없는 비정상 데이터는 기존처럼 매번 새
+    UUID를 씁니다(식별 불가능하니 incremental의 의미가 없음)."""
     doc = Document.new(
         source_type="notion",
         source_origin=source_origin,
@@ -173,6 +192,8 @@ def _make_document(
         notion_block_id=notion_block_id,
         is_editable=False,
     )
+    if notion_block_id:
+        doc.doc_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{notion_block_id}|{part_index}"))
     doc.category = tag_category(doc.title, doc.content)
     return doc
 
@@ -219,6 +240,43 @@ def _chunk_page_blocks(
     return documents
 
 
+def _pack_parts_by_size(parts: List[str], max_size: int) -> List[str]:
+    """텍스트 조각들을 max_size 이하로 묶습니다.
+
+    문단(parts 원소) 경계를 지켜가며 누적하다가 다음 조각을 더하면 한도를
+    넘을 때 새 묶음으로 끊습니다. 조각 하나가 그 자체로 max_size를 넘으면
+    문단 경계를 포기하고 그 조각만 글자 단위로 분할합니다(fallback 청킹과
+    동일한 방식).
+    """
+    chunks: List[str] = []
+    buffer: List[str] = []
+    buffer_len = 0
+
+    def flush():
+        nonlocal buffer, buffer_len
+        if buffer:
+            chunks.append("\n".join(buffer))
+            buffer, buffer_len = [], 0
+
+    for part in parts:
+        if len(part) > max_size:
+            flush()
+            for start in range(0, len(part), max_size):
+                chunks.append(part[start:start + max_size])
+            continue
+
+        next_len = buffer_len + (1 if buffer else 0) + len(part)
+        if buffer and next_len > max_size:
+            flush()
+            buffer, buffer_len = [part], len(part)
+        else:
+            buffer.append(part)
+            buffer_len = next_len
+
+    flush()
+    return chunks
+
+
 def _chunk_by_headings(
     client: Client,
     blocks: List[dict],
@@ -231,6 +289,10 @@ def _chunk_by_headings(
     자식 블록으로 들어가므로, heading에 has_children이 있으면 자식을 재귀
     수집해 content_parts에 포함시킵니다(접지 않은 일반 heading의 형제 블록
     수집과 함께 동작).
+
+    heading 하나의 본문이 FALLBACK_CHUNK_SIZE를 넘으면, 임베딩이 여러 주제로
+    희석되는 것을 막기 위해 문단 단위로 묶어 "(파트 N)" Document로 나눕니다
+    (notion_block_id는 모두 같은 heading을 가리키므로 딥링크는 그대로 유지됩니다).
     """
     documents: List[Document] = []
     current_heading_block: Optional[dict] = None
@@ -243,10 +305,12 @@ def _chunk_by_headings(
             return
         title = (_extract_text(current_heading_block)
                  if current_heading_block else source_origin)
-        content = "\n".join(content_parts)
-        doc = _make_document(source_origin, title, content,
-                             notion_page_url, current_block_id)
-        documents.append(doc)
+        chunks = _pack_parts_by_size(content_parts, FALLBACK_CHUNK_SIZE) or [""]
+        for idx, chunk in enumerate(chunks):
+            chunk_title = title if len(chunks) == 1 else f"{title} (파트 {idx + 1})"
+            doc = _make_document(source_origin, chunk_title, chunk,
+                                 notion_page_url, current_block_id, part_index=idx)
+            documents.append(doc)
         current_heading_block = None
         current_block_id = None
         content_parts = []
@@ -309,6 +373,7 @@ def _chunk_fallback(
             chunk,
             notion_page_url,
             blocks[block_idx]["id"],
+            part_index=idx,
         )
         documents.append(doc)
     return documents
@@ -324,6 +389,7 @@ def collect_notion_page(
     page_name: str,
     notion_page_url: str,
     _visited: Optional[set] = None,
+    _visited_databases: Optional[set] = None,
 ) -> List[Document]:
     """
     단일 Notion 페이지를 수집해 Document 리스트를 반환합니다.
@@ -331,6 +397,9 @@ def collect_notion_page(
 
     페이지 안에 column_list/callout 등으로 감싸인 하위 페이지(child_page)가 있으면
     각각의 공개 URL을 다시 조회해 재귀적으로 수집합니다 (_visited로 순환 참조 방지).
+    child_database(자료실 등)가 있으면 collect_notion_database로 넘겨 각 행을 같은
+    방식으로 재귀 수집합니다. _visited_databases를 넘기면 발견된 데이터베이스 id를
+    그 안에 모아둡니다 (cron이 나중에 "알고 있는 데이터베이스" 목록을 등록할 때 사용).
     """
     if _visited is None:
         _visited = set()
@@ -347,7 +416,7 @@ def collect_notion_page(
         logger.warning("  '%s' 페이지가 비어있습니다.", page_name)
         return []
 
-    expanded_blocks, nested_pages = _expand_blocks(client, blocks)
+    expanded_blocks, nested_pages, nested_databases = _expand_blocks(client, blocks)
     docs = _chunk_page_blocks(client, expanded_blocks, page_name, notion_page_url)
     logger.info("  생성된 Document 수: %d", len(docs))
 
@@ -356,7 +425,72 @@ def collect_notion_page(
         if not sub_url:
             logger.warning("  하위 페이지 URL을 확인할 수 없어 건너뜁니다: %s (id=%s)", sub_title, sub_id)
             continue
-        docs.extend(collect_notion_page(client, sub_id, sub_title or page_name, sub_url, _visited))
+        docs.extend(collect_notion_page(client, sub_id, sub_title or page_name, sub_url,
+                                         _visited, _visited_databases))
+
+    for db_id, db_title in nested_databases:
+        if _visited_databases is not None:
+            _visited_databases.add(db_id)
+        docs.extend(collect_notion_database(client, db_id, db_title or page_name,
+                                             _visited, _visited_databases))
+
+    return docs
+
+
+def _fetch_data_source_rows(client: Client, data_source_id: str) -> List[dict]:
+    """데이터베이스의 한 data_source(행 목록)를 페이지네이션 처리해 모두 반환합니다."""
+    rows: List[dict] = []
+    cursor = None
+    while True:
+        resp = client.data_sources.query(data_source_id=data_source_id, start_cursor=cursor)
+        rows.extend(resp.get("results", []))
+        if not resp.get("has_more"):
+            break
+        cursor = resp.get("next_cursor")
+    return rows
+
+
+def _row_title(row: dict) -> str:
+    """데이터베이스 행(페이지)의 title 속성값을 plain text로 추출합니다."""
+    for prop in row.get("properties", {}).values():
+        if prop.get("type") == "title":
+            return _rich_text_plain(prop.get("title", []))
+    return ""
+
+
+def collect_notion_database(
+    client: Client,
+    database_id: str,
+    fallback_title: str = "",
+    _visited: Optional[set] = None,
+    _visited_databases: Optional[set] = None,
+) -> List[Document]:
+    """child_database(자료실 등)를 수집합니다.
+
+    자료실 행은 속성에 내용이 없고, 행 자신이 하나의 노션 페이지라 그 페이지 블록
+    안에 실제 내용이 들어있습니다. 그래서 각 행을 child_page와 동일한 방식
+    (collect_notion_page)으로 재귀 수집하며, source_origin은 그 행 자신의 제목이
+    됩니다(하위 페이지 수집과 동일한 관례).
+    """
+    try:
+        db = client.databases.retrieve(database_id=database_id)
+    except APIResponseError as e:
+        logger.error("데이터베이스 조회 실패 (id=%s): %s", database_id, e)
+        return []
+
+    docs: List[Document] = []
+    for ds in db.get("data_sources", []):
+        try:
+            rows = _fetch_data_source_rows(client, ds["id"])
+        except APIResponseError as e:
+            logger.error("데이터베이스 행 조회 실패 (data_source_id=%s): %s", ds["id"], e)
+            continue
+        for row in rows:
+            row_id = row["id"]
+            row_title = _row_title(row) or fallback_title or "제목 없음"
+            row_url = row.get("public_url") or row.get("url") or ""
+            docs.extend(collect_notion_page(client, row_id, row_title, row_url,
+                                             _visited, _visited_databases))
 
     return docs
 
@@ -467,6 +601,11 @@ def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Documen
     페이지만 수정해도 상위 페이지의 last_edited_time을 갱신하지 않으므로, 하위 페이지
     추적 없이는 그 변경이 영원히 감지되지 않습니다.
 
+    child_database(자료실 등)는 행 추가/삭제가 last_edited_time에 반영되지 않아 같은
+    방식으로 추적할 수 없습니다. 대신 한 번 발견한 데이터베이스 id를
+    "db::{key}::{database_id}" 키로 등록해두고, 페이지 자체가 그대로라 스킵하는
+    경우에도 등록된 데이터베이스만큼은 구글 캘린더처럼 매번 직접 재조회합니다.
+
     Returns:
         (updated_docs, summary)
     """
@@ -474,6 +613,7 @@ def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Documen
     from storage.supabase_store import (
         get_sync_metadata, upsert_sync_metadata,
         get_sync_metadata_children, delete_sync_metadata_children,
+        get_sync_metadata_databases, delete_sync_metadata_databases,
     )
 
     token = os.environ.get("NOTION_API_TOKEN")
@@ -519,7 +659,16 @@ def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Documen
                     break
 
         if not top_changed and not child_changed:
-            logger.info("변경 없음, 스킵: %s (last_edited=%s)", page_name, last_edited)
+            # 페이지/하위페이지는 그대로지만, 등록된 child_database는 행 추가·삭제가
+            # last_edited_time에 반영되지 않으므로 매번 직접 재조회해서 비교합니다.
+            db_docs: List[Document] = []
+            for db_meta in get_sync_metadata_databases(key, conn):
+                db_id = db_meta["page_key"].split("::", 2)[2]
+                db_docs.extend(collect_notion_database(client, db_id))
+            all_docs.extend(db_docs)
+
+            logger.info("변경 없음, 스킵(자료실 %d건만 재확인): %s (last_edited=%s)",
+                        len(db_docs), page_name, last_edited)
             summary[key] = {
                 "page_name": page_name,
                 "doc_count": 0,
@@ -530,7 +679,8 @@ def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Documen
 
         try:
             visited: set = set()
-            docs = collect_notion_page(client, page_id, page_name, url, visited)
+            visited_dbs: set = set()
+            docs = collect_notion_page(client, page_id, page_name, url, visited, visited_dbs)
             all_docs.extend(docs)
             now = datetime.now(timezone.utc).isoformat()
             upsert_sync_metadata(key, last_edited, now, conn)
@@ -544,6 +694,12 @@ def sync_notion_pages_incremental(config: dict, conn=None) -> Tuple[List[Documen
                 sub_last_edited = get_page_last_edited_time(client, sub_id)
                 if sub_last_edited is not None:
                     upsert_sync_metadata(f"{key}::{sub_id}", sub_last_edited, now, conn)
+
+            # 이번에 실제로 발견한 child_database 목록으로 교체합니다 (다음번에
+            # 페이지가 스킵되어도 이 데이터베이스들만큼은 계속 직접 재조회하도록).
+            delete_sync_metadata_databases(key, conn)
+            for db_id in visited_dbs:
+                upsert_sync_metadata(f"db::{key}::{db_id}", "-", now, conn)
 
             summary[key] = {
                 "page_name": page_name,

@@ -388,47 +388,33 @@ def embed_document(doc_id: str, operator_email: str = Depends(get_current_operat
 
 @app.post("/kb/documents/embed-all")
 def embed_all_documents(operator_email: str = Depends(get_current_operator)):
-    """수동 업로드 문서(파일/구글시트) 중 임베딩이 반영되지 않은 문서를 한 번에 처리합니다.
+    """임베딩이 비어있는 문서를 출처 구분 없이(업로드 문서/노션/구글 캘린더) 한 번에 재시도합니다.
 
     구글 스프레드시트처럼 한 번 업로드로 문서가 수백~수천 건 생기는 경우, 문서 1건당
     '갱신' 버튼을 일일이 누르는 게 비현실적이라 일괄 처리 경로가 필요합니다.
-    노션 소스는 대상에서 제외합니다 (단일 문서 갱신과 동일한 제약 — '지금 갱신' 사용).
 
-    구글시트 업로드처럼 문서가 수백~수천 건일 수 있어, 문서 1건당 DB에 새로
-    왕복(round trip)하면 Vercel↔Supabase 간 리전 지연이 누적돼 함수 실행 제한
-    시간을 넘길 수 있습니다. 커넥션을 한 번만 열어 재사용하고, 임베딩 쓰기도
-    문서별 update_embedding 대신 배치당 1왕복인 update_embeddings_batch로
-    처리합니다 (노션 동기화에 적용한 것과 동일한 수정)."""
-    from storage.supabase_store import (
-        get_connection, get_documents_missing_embedding, update_embeddings_batch,
-    )
-    from embedding_manager import get_embedding_provider
+    노션/캘린더 문서도 더 이상 제외하지 않습니다 — Voyage rate limit(결제수단
+    미등록 시 분당 3건/1만 토큰) 때문에 "지금 갱신" 중 임베딩 일부가 실패할 수
+    있는데, 이 버튼은 노션 API/캘린더 ICS를 다시 수집하지 않고 이미 저장된 문서
+    중 임베딩만 비어있는 것만 재시도합니다. "지금 갱신"이 동시에 돌고 있어 그 사이
+    해당 문서가 삭제됐어도 update_embeddings_batch는 0건 갱신으로 끝나 안전합니다.
+
+    배치 분할 + Voyage rate limit 재시도/백오프는 embedding_manager.backfill_embeddings에
+    이미 구현되어 있으므로 그대로 재사용합니다(중복 구현 방지)."""
+    from storage.supabase_store import get_connection, get_documents_missing_embedding
+    from embedding_manager import get_embedding_provider, backfill_embeddings
 
     config = _load_static_config()
     model = config.get("embedding_model")
 
     conn = get_connection()
     try:
-        docs = [d for d in get_documents_missing_embedding(model, conn=conn) if d.is_editable]
-
+        docs = get_documents_missing_embedding(model, conn=conn)
         if not docs:
             return {"status": "ok", "embedded": 0, "failed": 0}
 
         provider = get_embedding_provider(config)
-        embedded, failed = 0, 0
-        batch_size = 100
-        for start in range(0, len(docs), batch_size):
-            batch = docs[start:start + batch_size]
-            texts = [d.title + " " + d.content for d in batch]
-            try:
-                embeddings = provider.embed_documents(texts)
-            except Exception:
-                logger.exception("일괄 임베딩 배치 실패 (start=%d)", start)
-                failed += len(batch)
-                continue
-            items = [(doc.doc_id, embedding) for doc, embedding in zip(batch, embeddings)]
-            update_embeddings_batch(items, model, conn=conn)
-            embedded += len(items)
+        embedded, failed = backfill_embeddings(docs, provider, model, conn=conn)
     finally:
         conn.close()
 
@@ -584,5 +570,6 @@ def manual_source_guide(operator_email: str = Depends(get_current_operator)):
             {"source_type": "Word(.docx) / PDF / Excel(.xlsx)", "처리방식": "파일을 직접 업로드하면 자동저장 됩니다"},
             {"source_type": "HWP / HWPX", "처리방식": "직접 업로드 불가 — 사전에 PDF나 텍스트 파일로 변환한 뒤 업로드해야 자동저장 됩니다"},
             {"source_type": "구글 스프레드시트", "처리방식": "공개 공유 링크(누구나 보기) URL을 매번 새로 입력하면 가져옵니다. 비공개 시트는 지원되지 않습니다"},
+            {"source_type": "구글 캘린더", "처리방식": "config.json에 등록된 공개 캘린더의 일정(오늘 기준 -7일~+180일)을 노션과 함께 '지금 갱신'/매일 자동 갱신 시 가져옵니다. 비공개 캘린더는 지원되지 않습니다"},
         ]
     }

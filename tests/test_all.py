@@ -14,7 +14,7 @@ import sys
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
@@ -471,6 +471,213 @@ class TestNotionCollector:
         assert docs[0].title == "1. 활동 종료 후"
         assert "토글 안의 실제 내용" in docs[0].content
 
+    def test_make_document_doc_id_stable_for_same_block(self):
+        """같은 block_id로 두 번 청킹하면(매 동기화마다 일어나는 일) doc_id가 같아야
+        incremental 동기화가 "이게 그 블록"이라고 알아볼 수 있다."""
+        from collectors.notion_collector import _chunk_by_headings
+        mock_client = MagicMock()
+        blocks = [
+            {"id": "h1", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "1장"}]},
+             "has_children": False},
+            {"id": "p1", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": "내용"}]},
+             "has_children": False},
+        ]
+        docs1 = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        docs2 = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        assert docs1[0].doc_id == docs2[0].doc_id
+
+    def test_make_document_doc_id_differs_for_different_blocks(self):
+        from collectors.notion_collector import _chunk_by_headings
+        mock_client = MagicMock()
+        blocks = [
+            {"id": "h1", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "1장"}]}, "has_children": False},
+            {"id": "h2", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "2장"}]}, "has_children": False},
+        ]
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        assert docs[0].doc_id != docs[1].doc_id
+
+    def test_make_document_doc_id_differs_across_parts_of_same_block(self):
+        """같은 heading(같은 block_id)이 여러 파트로 쪼개질 때, 파트마다 다른
+        doc_id가 나와야 한다(part_index로 구분)."""
+        from collectors.notion_collector import _chunk_by_headings, FALLBACK_CHUNK_SIZE
+        mock_client = MagicMock()
+        blocks = [
+            {"id": "h1", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "긴 장"}]}, "has_children": False},
+            {"id": "p1", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": "가" * (FALLBACK_CHUNK_SIZE - 100)}]},
+             "has_children": False},
+            {"id": "p2", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": "나" * (FALLBACK_CHUNK_SIZE - 100)}]},
+             "has_children": False},
+        ]
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        assert len(docs) == 2
+        assert docs[0].doc_id != docs[1].doc_id
+
+    def test_heading_chunking_splits_long_section_by_paragraph(self):
+        """heading 본문이 FALLBACK_CHUNK_SIZE를 넘으면 문단 단위로 (파트 N) 분할되는지 확인."""
+        from collectors.notion_collector import _chunk_by_headings, FALLBACK_CHUNK_SIZE
+        mock_client = MagicMock()
+        long_paragraph_1 = "가" * (FALLBACK_CHUNK_SIZE - 100)
+        long_paragraph_2 = "나" * (FALLBACK_CHUNK_SIZE - 100)
+        blocks = [
+            {"id": "h1", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "긴 장"}]},
+             "has_children": False},
+            {"id": "p1", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": long_paragraph_1}]},
+             "has_children": False},
+            {"id": "p2", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": long_paragraph_2}]},
+             "has_children": False},
+        ]
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        assert len(docs) == 2
+        assert docs[0].title == "긴 장 (파트 1)"
+        assert docs[1].title == "긴 장 (파트 2)"
+        # 두 파트 모두 같은 heading을 가리켜야 딥링크가 유지됨
+        assert docs[0].notion_block_id == "h1"
+        assert docs[1].notion_block_id == "h1"
+        assert long_paragraph_1 in docs[0].content
+        assert long_paragraph_2 in docs[1].content
+        for doc in docs:
+            assert len(doc.content) <= FALLBACK_CHUNK_SIZE
+
+    def test_heading_chunking_splits_single_oversized_paragraph(self):
+        """문단 하나가 그 자체로 FALLBACK_CHUNK_SIZE를 넘으면 글자 단위로 분할되는지 확인."""
+        from collectors.notion_collector import _chunk_by_headings, FALLBACK_CHUNK_SIZE
+        mock_client = MagicMock()
+        huge_paragraph = "다" * (FALLBACK_CHUNK_SIZE * 2 + 50)
+        blocks = [
+            {"id": "h1", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "거대한 장"}]},
+             "has_children": False},
+            {"id": "p1", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": huge_paragraph}]},
+             "has_children": False},
+        ]
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        assert len(docs) == 3
+        assert "".join(d.content for d in docs) == huge_paragraph
+        for doc in docs:
+            assert len(doc.content) <= FALLBACK_CHUNK_SIZE
+            assert doc.notion_block_id == "h1"
+
+    def test_pack_parts_by_size_exact_boundary(self):
+        """누적 길이가 정확히 max_size와 같으면 한 청크에 남고, 1자만 넘으면 분리되는지 확인."""
+        from collectors.notion_collector import _pack_parts_by_size
+        # "\n"으로 합치므로 "A"*399 + "\n" + "B"*400 = 800자 → 정확히 max_size
+        parts_fit = ["A" * 399, "B" * 400]
+        chunks_fit = _pack_parts_by_size(parts_fit, max_size=800)
+        assert len(chunks_fit) == 1
+        assert len(chunks_fit[0]) == 800
+
+        # 한 글자만 늘려도 합치면 801자라 두 청크로 분리되어야 함
+        parts_overflow = ["A" * 400, "B" * 400]
+        chunks_overflow = _pack_parts_by_size(parts_overflow, max_size=800)
+        assert len(chunks_overflow) == 2
+        assert chunks_overflow[0] == "A" * 400
+        assert chunks_overflow[1] == "B" * 400
+
+    def test_pack_parts_by_size_oversized_part_resumes_buffer_after(self):
+        """작은 조각 → 캡을 넘는 조각 → 작은 조각 순서에서, 캡을 넘는 조각만 글자 단위로
+        쪼개지고 그 앞뒤의 작은 조각은 온전히 보존되는지 확인 (버퍼 유실/오염 없음)."""
+        from collectors.notion_collector import _pack_parts_by_size
+        small_before = "앞부분"
+        huge = "다" * 1700  # 800 기준 3개 청크로 분리되어야 함 (800+800+100)
+        small_after = "뒷부분"
+        chunks = _pack_parts_by_size([small_before, huge, small_after], max_size=800)
+
+        assert chunks[0] == small_before
+        assert chunks[1] == "다" * 800
+        assert chunks[2] == "다" * 800
+        assert chunks[3] == "다" * 100
+        assert chunks[4] == small_after
+        # 원본 내용이 한 글자도 누락/중복되지 않아야 함
+        assert "".join(chunks) == small_before + huge + small_after
+
+    def test_pack_parts_by_size_empty_input(self):
+        """빈 리스트는 빈 리스트를 반환 (heading 본문이 없는 경우와 동일 입력)."""
+        from collectors.notion_collector import _pack_parts_by_size
+        assert _pack_parts_by_size([], max_size=800) == []
+
+    def test_heading_chunking_short_section_keeps_plain_title(self):
+        """캡을 넘지 않는 섹션은 (파트 N) 접미사 없이 원래 제목을 유지해야 한다
+        (긴 섹션과 짧은 섹션이 같은 페이지에 섞여 있는 현실적인 경우)."""
+        from collectors.notion_collector import _chunk_by_headings, FALLBACK_CHUNK_SIZE
+        mock_client = MagicMock()
+        blocks = [
+            {"id": "h1", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "짧은 장"}]},
+             "has_children": False},
+            {"id": "p1", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": "짧은 내용"}]},
+             "has_children": False},
+            {"id": "h2", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "긴 장"}]},
+             "has_children": False},
+            {"id": "p2", "type": "paragraph",
+             "paragraph": {"rich_text": [{"plain_text": "라" * (FALLBACK_CHUNK_SIZE + 1)}]},
+             "has_children": False},
+        ]
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        short_docs = [d for d in docs if d.title.startswith("짧은 장")]
+        long_docs = [d for d in docs if d.title.startswith("긴 장")]
+        assert len(short_docs) == 1
+        assert short_docs[0].title == "짧은 장"  # 접미사 없음
+        assert len(long_docs) == 2
+        assert long_docs[0].title == "긴 장 (파트 1)"
+        assert long_docs[1].title == "긴 장 (파트 2)"
+
+    def test_heading_chunking_empty_body_no_part_suffix(self):
+        """본문이 전혀 없는 heading은 분할 로직을 거쳐도 빈 Document 1개만 생성되고
+        제목에 (파트 N)이 붙지 않아야 한다 (분할 전 기존 동작 보존)."""
+        from collectors.notion_collector import _chunk_by_headings
+        mock_client = MagicMock()
+        blocks = [
+            {"id": "h1", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "본문 없는 장"}]},
+             "has_children": False},
+            {"id": "h2", "type": "heading_1",
+             "heading_1": {"rich_text": [{"plain_text": "다음 장"}]},
+             "has_children": False},
+        ]
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        assert len(docs) == 2
+        assert docs[0].title == "본문 없는 장"
+        assert docs[0].content == ""
+
+    def test_heading_chunking_toggleable_heading_long_children_split(self):
+        """토글 가능한 heading의 자식 텍스트가 캡을 넘으면(이미 하나의 문자열로 합쳐진
+        뒤 content_parts에 들어가므로) 문단 경계 없이 글자 단위로 분할되는지 확인."""
+        from collectors.notion_collector import _chunk_by_headings, FALLBACK_CHUNK_SIZE
+        mock_client = MagicMock()
+        long_children_text = "마" * (FALLBACK_CHUNK_SIZE + 200)
+        mock_client.blocks.children.list.return_value = {
+            "results": [
+                {"id": "c1", "type": "paragraph",
+                 "paragraph": {"rich_text": [{"plain_text": long_children_text}]},
+                 "has_children": False},
+            ],
+            "has_more": False,
+        }
+        blocks = [
+            {"id": "h1", "type": "heading_3",
+             "heading_3": {"rich_text": [{"plain_text": "긴 토글형 heading"}], "is_toggleable": True},
+             "has_children": True},
+        ]
+        docs = _chunk_by_headings(mock_client, blocks, "테스트페이지", "https://notion.so/xxx")
+        assert len(docs) == 2
+        assert all(d.notion_block_id == "h1" for d in docs)
+        assert "".join(d.content for d in docs) == long_children_text
+        for d in docs:
+            assert len(d.content) <= FALLBACK_CHUNK_SIZE
+
     def test_collect_notion_page_empty(self):
         """빈 페이지는 빈 리스트 반환."""
         from collectors.notion_collector import collect_notion_page
@@ -500,24 +707,27 @@ class TestNotionCollector:
         )
 
         top_blocks = [{"id": "cl1", "type": "column_list", "column_list": {}, "has_children": True}]
-        expanded, nested_pages = _expand_blocks(mock_client, top_blocks)
+        expanded, nested_pages, nested_databases = _expand_blocks(mock_client, top_blocks)
 
         assert nested_pages == [("cp1", "하위페이지")]
+        assert nested_databases == []
         expanded_ids = [b["id"] for b in expanded]
         assert "co1" in expanded_ids  # callout 자신은 유지
         assert "p1" in expanded_ids   # callout 안의 본문도 펼쳐짐
         assert "cl1" not in expanded_ids and "col1" not in expanded_ids  # 레이아웃 컨테이너는 버림
 
-    def test_expand_blocks_skips_child_database(self):
-        """child_database(자료실)는 건너뛰고 nested_pages에도 포함하지 않는다."""
+    def test_expand_blocks_extracts_child_database(self):
+        """child_database(자료실)는 nested_databases로 따로 모은다(행 자신이
+        하나의 페이지라 collect_notion_database가 별도로 재귀 수집함)."""
         from collectors.notion_collector import _expand_blocks
 
         mock_client = MagicMock()
         blocks = [{"id": "db1", "type": "child_database",
                    "child_database": {"title": "자료실"}, "has_children": False}]
-        expanded, nested_pages = _expand_blocks(mock_client, blocks)
+        expanded, nested_pages, nested_databases = _expand_blocks(mock_client, blocks)
         assert expanded == []
         assert nested_pages == []
+        assert nested_databases == [("db1", "자료실")]
 
     def test_collect_notion_page_recurses_into_child_page(self):
         """callout 안에 숨은 child_page를 발견하면 공개 URL을 조회해 재귀 수집한다."""
@@ -571,6 +781,112 @@ class TestNotionCollector:
         assert docs[0].title == "메인페이지"
         assert all(d.title != "접근불가 페이지" for d in docs)
 
+    def test_collect_notion_page_recurses_into_child_database(self):
+        """child_database(자료실)를 발견하면 각 행을 child_page와 동일한 방식으로
+        재귀 수집한다(행 자신이 하나의 페이지라 속성이 아니라 블록에 내용이 있음)."""
+        from collectors.notion_collector import collect_notion_page
+
+        mock_client = MagicMock()
+        top_blocks = [{"id": "db1", "type": "child_database",
+                       "child_database": {"title": "자료실"}, "has_children": False}]
+        row_blocks = [{"id": "rb1", "type": "paragraph",
+                       "paragraph": {"rich_text": [{"plain_text": "행 내용"}]}, "has_children": False}]
+        children_map = {"top-1": top_blocks, "row-1": row_blocks}
+        mock_client.blocks.children.list.side_effect = (
+            lambda block_id, start_cursor=None: {"results": children_map.get(block_id, []), "has_more": False}
+        )
+        mock_client.databases.retrieve.return_value = {"data_sources": [{"id": "ds1", "name": "자료실"}]}
+        mock_client.data_sources.query.return_value = {
+            "results": [{
+                "id": "row-1",
+                "properties": {"이름": {"type": "title", "title": [{"plain_text": "행 제목"}]}},
+                "url": "https://app.notion.com/p/row-1",
+                "public_url": "https://example.notion.site/row-1",
+            }],
+            "has_more": False,
+        }
+
+        docs = collect_notion_page(mock_client, "top-1", "메인페이지", "https://example.notion.site/top-1")
+
+        row_docs = [d for d in docs if d.content == "행 내용"]
+        assert len(row_docs) == 1
+        assert row_docs[0].source_origin == "행 제목"
+        assert row_docs[0].notion_page_url == "https://example.notion.site/row-1"
+        assert row_docs[0].notion_block_id == "rb1"
+
+    def test_collect_notion_page_tracks_visited_databases(self):
+        """_visited_databases를 넘기면 발견한 child_database id가 그 안에 모인다
+        (cron이 나중에 등록할 때 씀)."""
+        from collectors.notion_collector import collect_notion_page
+
+        mock_client = MagicMock()
+        top_blocks = [{"id": "db1", "type": "child_database",
+                       "child_database": {"title": "자료실"}, "has_children": False}]
+        mock_client.blocks.children.list.side_effect = (
+            lambda block_id, start_cursor=None: {"results": top_blocks if block_id == "top-1" else [],
+                                                   "has_more": False}
+        )
+        mock_client.databases.retrieve.return_value = {"data_sources": []}
+
+        visited_dbs: set = set()
+        collect_notion_page(mock_client, "top-1", "메인페이지", "https://example.notion.site/top-1",
+                             _visited_databases=visited_dbs)
+
+        assert visited_dbs == {"db1"}
+
+    def test_collect_notion_database_paginates_multiple_data_sources_and_rows(self):
+        """데이터베이스에 여러 data_source/행이 있어도 페이지네이션을 따라가며 모두 모은다."""
+        from collectors.notion_collector import collect_notion_database
+
+        mock_client = MagicMock()
+
+        def _make_row(row_id, title, has_public_url=True):
+            return {
+                "id": row_id,
+                "properties": {"이름": {"type": "title", "title": [{"plain_text": title}]}},
+                "url": f"https://app.notion.com/p/{row_id}",
+                "public_url": f"https://example.notion.site/{row_id}" if has_public_url else None,
+            }
+
+        def fake_query(data_source_id, start_cursor=None):
+            if data_source_id == "ds1":
+                if start_cursor is None:
+                    return {"results": [_make_row("r1", "행1")], "has_more": True, "next_cursor": "c2"}
+                return {"results": [_make_row("r2", "행2")], "has_more": False}
+            return {"results": [_make_row("r3", "행3", has_public_url=False)], "has_more": False}
+
+        mock_client.databases.retrieve.return_value = {
+            "data_sources": [{"id": "ds1", "name": "A"}, {"id": "ds2", "name": "B"}],
+        }
+        mock_client.data_sources.query.side_effect = fake_query
+        mock_client.blocks.children.list.return_value = {
+            "results": [{"id": "blk", "type": "paragraph",
+                         "paragraph": {"rich_text": [{"plain_text": "내용"}]}, "has_children": False}],
+            "has_more": False,
+        }
+
+        docs = collect_notion_database(mock_client, "db1")
+
+        titles = sorted(d.source_origin for d in docs)
+        assert titles == ["행1", "행2", "행3"]
+        # public_url이 없는 행(r3)은 internal url로 폴백한다
+        r3_doc = next(d for d in docs if d.source_origin == "행3")
+        assert r3_doc.notion_page_url == "https://app.notion.com/p/r3"
+
+    def test_collect_notion_database_returns_empty_on_retrieve_failure(self):
+        """데이터베이스 자체 조회가 실패해도(권한 등) 예외를 전파하지 않고 빈 목록을 반환한다."""
+        from collectors.notion_collector import collect_notion_database
+        from notion_client.errors import APIResponseError
+        import httpx
+
+        mock_client = MagicMock()
+        mock_client.databases.retrieve.side_effect = APIResponseError(
+            "object_not_found", 404, "찾을 수 없음", httpx.Headers(), "",
+        )
+
+        docs = collect_notion_database(mock_client, "db1")
+        assert docs == []
+
     def test_sync_notion_pages_skips_placeholder(self):
         """URL이 플레이스홀더이면 건너뜀."""
         from collectors.notion_collector import sync_notion_pages
@@ -598,6 +914,7 @@ class TestNotionCollector:
              patch("storage.supabase_store.get_sync_metadata_children",
                    return_value=[{"page_key": "main::sub-1", "last_notion_edited_time": "2026-01-01T00:00:00Z",
                                    "last_synced_at": "x"}]), \
+             patch("storage.supabase_store.get_sync_metadata_databases", return_value=[]), \
              patch("collectors.notion_collector.collect_notion_page") as fake_collect:
             docs, summary = sync_notion_pages_incremental(config)
 
@@ -606,6 +923,39 @@ class TestNotionCollector:
         assert summary["main"]["reason"] == "변경 없음"
         assert docs == []
 
+    def test_sync_incremental_skip_still_rechecks_known_database(self):
+        """페이지/하위페이지는 그대로라 스킵하더라도, 등록된 child_database(자료실)는
+        행 추가·삭제가 last_edited_time에 반영되지 않으므로 매번 직접 재조회한다."""
+        from collectors.notion_collector import sync_notion_pages_incremental
+        from models.document import Document
+        config = {"notion_pages": {"main": "https://notion.so/x"}}
+
+        last_edited_by_id = {"top-1": "2026-01-01T00:00:00Z"}
+        db_doc = Document.new(source_type="notion", source_origin="FAQ", title="FAQ", content="c",
+                               notion_block_id="row-block-1")
+
+        with patch.dict("os.environ", {"NOTION_API_TOKEN": "test-token"}), \
+             patch("collectors.notion_collector.Client"), \
+             patch("collectors.notion_collector.extract_page_id", return_value="top-1"), \
+             patch("collectors.notion_collector.get_page_last_edited_time",
+                   side_effect=lambda client, pid: last_edited_by_id.get(pid)), \
+             patch("storage.supabase_store.get_sync_metadata",
+                   return_value={"page_key": "main", "last_notion_edited_time": "2026-01-01T00:00:00Z",
+                                  "last_synced_at": "x"}), \
+             patch("storage.supabase_store.get_sync_metadata_children", return_value=[]), \
+             patch("storage.supabase_store.get_sync_metadata_databases",
+                   return_value=[{"page_key": "db::main::db-1", "last_notion_edited_time": "-",
+                                   "last_synced_at": "x"}]), \
+             patch("collectors.notion_collector.collect_notion_database",
+                   return_value=[db_doc]) as fake_collect_db, \
+             patch("collectors.notion_collector.collect_notion_page") as fake_collect_page:
+            docs, summary = sync_notion_pages_incremental(config)
+
+        fake_collect_page.assert_not_called()
+        fake_collect_db.assert_called_once_with(ANY, "db-1")
+        assert summary["main"]["skipped"] is True
+        assert docs == [db_doc]
+
     def test_sync_incremental_detects_child_page_only_change(self):
         """최상위 페이지는 안 바뀌었어도, 하위 페이지 자신의 수정 시각이 바뀌면 재수집한다."""
         from collectors.notion_collector import sync_notion_pages_incremental
@@ -613,7 +963,7 @@ class TestNotionCollector:
 
         last_edited_by_id = {"top-1": "2026-01-01T00:00:00Z", "sub-1": "2026-02-01T00:00:00Z"}
 
-        def fake_collect_notion_page(client, page_id, page_name, url, visited=None):
+        def fake_collect_notion_page(client, page_id, page_name, url, visited=None, visited_dbs=None):
             if visited is not None:
                 visited.add(page_id)
                 visited.add("sub-1")
@@ -633,11 +983,13 @@ class TestNotionCollector:
              patch("collectors.notion_collector.collect_notion_page",
                    side_effect=fake_collect_notion_page), \
              patch("storage.supabase_store.upsert_sync_metadata") as fake_upsert, \
-             patch("storage.supabase_store.delete_sync_metadata_children") as fake_delete_children:
+             patch("storage.supabase_store.delete_sync_metadata_children") as fake_delete_children, \
+             patch("storage.supabase_store.delete_sync_metadata_databases") as fake_delete_dbs:
             docs, summary = sync_notion_pages_incremental(config)
 
         assert summary["main"]["skipped"] is False
         fake_delete_children.assert_called_once_with("main", None)
+        fake_delete_dbs.assert_called_once_with("main", None)
         # 최상위(main)와 하위(main::sub-1) 모두 최신 수정 시각으로 기록되어야 함
         upserted_keys = {call.args[0] for call in fake_upsert.call_args_list}
         assert upserted_keys == {"main", "main::sub-1"}
@@ -649,7 +1001,7 @@ class TestNotionCollector:
 
         last_edited_by_id = {"top-1": "2026-03-01T00:00:00Z"}
 
-        def fake_collect_notion_page(client, page_id, page_name, url, visited=None):
+        def fake_collect_notion_page(client, page_id, page_name, url, visited=None, visited_dbs=None):
             if visited is not None:
                 visited.add(page_id)
             return []
@@ -666,7 +1018,8 @@ class TestNotionCollector:
              patch("collectors.notion_collector.collect_notion_page",
                    side_effect=fake_collect_notion_page), \
              patch("storage.supabase_store.upsert_sync_metadata"), \
-             patch("storage.supabase_store.delete_sync_metadata_children"):
+             patch("storage.supabase_store.delete_sync_metadata_children"), \
+             patch("storage.supabase_store.delete_sync_metadata_databases"):
             docs, summary = sync_notion_pages_incremental(config)
 
         assert summary["main"]["skipped"] is False
@@ -737,6 +1090,190 @@ class TestGoogleSheetCollector:
                    side_effect=req_mod.RequestException("timeout")):
             with pytest.raises(ValueError, match="다운로드 실패"):
                 collect_google_sheet(url)
+
+
+# ══════════════════════════════════════════════════════════════
+# collectors/calendar_collector.py
+# ══════════════════════════════════════════════════════════════
+
+class TestCalendarCollector:
+    def test_extract_calendar_id_from_embed_url(self):
+        from collectors.calendar_collector import _extract_calendar_id
+        url = "https://calendar.google.com/calendar/embed?src=26seoulclub%40gmail.com&ctz=Asia%2FSeoul"
+        assert _extract_calendar_id(url) == "26seoulclub@gmail.com"
+
+    def test_extract_calendar_id_from_bare_id(self):
+        from collectors.calendar_collector import _extract_calendar_id
+        assert _extract_calendar_id("26seoulclub@gmail.com") == "26seoulclub@gmail.com"
+
+    def test_build_ics_url_encodes_at_sign(self):
+        from collectors.calendar_collector import _build_ics_url
+        url = _build_ics_url("26seoulclub@gmail.com")
+        assert url == "https://calendar.google.com/calendar/ical/26seoulclub%40gmail.com/public/basic.ics"
+
+    def test_format_date_range_timed_same_day(self):
+        from datetime import datetime
+        from collectors.calendar_collector import _format_date_range
+        start = datetime(2026, 6, 26, 12, 0)
+        end = datetime(2026, 6, 26, 17, 0)
+        assert _format_date_range(start, end) == "2026년 6월 26일 12:00~17:00"
+
+    def test_format_date_range_timed_cross_day(self):
+        from datetime import datetime
+        from collectors.calendar_collector import _format_date_range
+        start = datetime(2026, 6, 26, 23, 0)
+        end = datetime(2026, 6, 27, 1, 0)
+        assert _format_date_range(start, end) == "2026년 6월 26일 23:00 ~ 2026년 6월 27일 01:00"
+
+    def test_format_date_range_all_day_single(self):
+        from datetime import date
+        from collectors.calendar_collector import _format_date_range
+        assert _format_date_range(date(2026, 7, 12), date(2026, 7, 13)) == "2026년 7월 12일"
+
+    def test_format_date_range_all_day_multi(self):
+        from datetime import date
+        from collectors.calendar_collector import _format_date_range
+        assert _format_date_range(date(2026, 6, 29), date(2026, 7, 6)) == "2026년 6월 29일~2026년 7월 5일"
+
+    def test_format_date_range_no_zero_padding(self):
+        """'08월'은 형태소 분석기가 '8월'과 다른 토큰이 되어 "8월 22일" 질문과 BM25
+        매칭이 깨지므로, 월/일에 0패딩이 들어가면 안 된다."""
+        from datetime import date
+        from collectors.calendar_collector import _format_date_range
+        assert _format_date_range(date(2026, 8, 5), date(2026, 8, 6)) == "2026년 8월 5일"
+
+    def _build_ics(self, events: list) -> bytes:
+        """(summary, dtstart, dtend, location, description) 튜플 목록으로 ICS 바이트를 만든다."""
+        import icalendar
+        cal = icalendar.Calendar()
+        cal.add("prodid", "-//test//")
+        cal.add("version", "2.0")
+        for summary, dtstart, dtend, location, description, extra in events:
+            ev = icalendar.Event()
+            ev.add("summary", summary)
+            ev.add("dtstart", dtstart)
+            ev.add("dtend", dtend)
+            ev.add("uid", summary)
+            ev.add("dtstamp", dtstart if hasattr(dtstart, "hour") else dtstart)
+            if location:
+                ev.add("location", location)
+            if description:
+                ev.add("description", description)
+            if extra:
+                ev.add("rrule", extra)
+            cal.add_component(ev)
+        return cal.to_ical()
+
+    def test_collect_calendar_basic_event(self):
+        from datetime import datetime, timedelta, timezone
+        from collectors.calendar_collector import collect_google_calendar
+        now = datetime.now(timezone.utc)
+        start = now + timedelta(days=5)
+        ics_bytes = self._build_ics([
+            ("정기 모임", start, start + timedelta(hours=2), "학생회관", "분기별 정기 모임", None),
+        ])
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = ics_bytes.decode("utf-8")
+
+        with patch("collectors.calendar_collector.requests.get", return_value=mock_resp):
+            docs = collect_google_calendar("26seoulclub@gmail.com")
+
+        assert len(docs) == 1
+        doc = docs[0]
+        assert doc.source_type == "google_calendar"
+        assert doc.source_origin == "google_calendar:26seoulclub@gmail.com"
+        assert doc.is_editable is False
+        assert "정기 모임" in doc.title
+        assert "장소: 학생회관" in doc.content
+        assert "설명: 분기별 정기 모임" in doc.content
+
+    def test_collect_calendar_doc_id_is_stable_across_syncs(self):
+        """같은 일정을 두 번 수집하면(매 동기화마다 일어나는 일) doc_id가 똑같아야
+        incremental 동기화가 "이게 그 일정"이라고 알아볼 수 있다."""
+        from datetime import datetime, timedelta, timezone
+        from collectors.calendar_collector import collect_google_calendar
+        now = datetime.now(timezone.utc)
+        start = now + timedelta(days=5)
+        ics_bytes = self._build_ics([
+            ("정기 모임", start, start + timedelta(hours=2), "학생회관", "내용", None),
+        ])
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = ics_bytes.decode("utf-8")
+
+        with patch("collectors.calendar_collector.requests.get", return_value=mock_resp):
+            docs1 = collect_google_calendar("26seoulclub@gmail.com")
+            docs2 = collect_google_calendar("26seoulclub@gmail.com")
+
+        assert docs1[0].doc_id == docs2[0].doc_id
+
+    def test_collect_calendar_doc_id_differs_for_different_events(self):
+        from datetime import datetime, timedelta, timezone
+        from collectors.calendar_collector import collect_google_calendar
+        now = datetime.now(timezone.utc)
+        start = now + timedelta(days=5)
+        ics_bytes = self._build_ics([
+            ("행사A", start, start + timedelta(hours=1), None, None, None),
+            ("행사B", start + timedelta(days=1), start + timedelta(days=1, hours=1), None, None, None),
+        ])
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = ics_bytes.decode("utf-8")
+
+        with patch("collectors.calendar_collector.requests.get", return_value=mock_resp):
+            docs = collect_google_calendar("26seoulclub@gmail.com")
+
+        assert docs[0].doc_id != docs[1].doc_id
+
+    def test_calendar_source_origin_matches_collect_result(self):
+        from collectors.calendar_collector import calendar_source_origin
+        url = "https://calendar.google.com/calendar/embed?src=26seoulclub%40gmail.com&ctz=Asia%2FSeoul"
+        assert calendar_source_origin(url) == "google_calendar:26seoulclub@gmail.com"
+
+    def test_collect_calendar_expands_recurring_events(self):
+        """매주 반복되는 일정은 발생일별로 각각 별도 Document가 되어야 한다."""
+        from datetime import datetime, timedelta, timezone
+        from collectors.calendar_collector import collect_google_calendar
+        now = datetime.now(timezone.utc)
+        # 30일 전부터 매주 반복 → 앞으로 180일 창 안에 여러 번 발생해야 함
+        start = now - timedelta(days=30)
+        ics_bytes = self._build_ics([
+            ("주간 스터디", start, start + timedelta(hours=1), None, None, {"freq": "weekly"}),
+        ])
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.text = ics_bytes.decode("utf-8")
+
+        with patch("collectors.calendar_collector.requests.get", return_value=mock_resp):
+            docs = collect_google_calendar("26seoulclub@gmail.com")
+
+        assert len(docs) > 1
+        assert all("주간 스터디" in d.title for d in docs)
+        # 발생일이 서로 달라야 함 (같은 내용이 중복 생성된 게 아니라 실제로 펼쳐진 것)
+        assert len({d.title for d in docs}) == len(docs)
+
+    def test_collect_calendar_404_raises(self):
+        from collectors.calendar_collector import collect_google_calendar
+        mock_resp = MagicMock()
+        mock_resp.status_code = 404
+
+        with patch("collectors.calendar_collector.requests.get", return_value=mock_resp):
+            with pytest.raises(ValueError, match="404"):
+                collect_google_calendar("26seoulclub@gmail.com")
+
+    def test_collect_calendar_empty_url_raises(self):
+        from collectors.calendar_collector import collect_google_calendar
+        with pytest.raises(ValueError, match="비어있습니다"):
+            collect_google_calendar("")
+
+    def test_collect_calendar_network_error_raises(self):
+        import requests as req_mod
+        from collectors.calendar_collector import collect_google_calendar
+        with patch("collectors.calendar_collector.requests.get",
+                   side_effect=req_mod.RequestException("timeout")):
+            with pytest.raises(ValueError, match="다운로드 실패"):
+                collect_google_calendar("26seoulclub@gmail.com")
 
 
 # ══════════════════════════════════════════════════════════════

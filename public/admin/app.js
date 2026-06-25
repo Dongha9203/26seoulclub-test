@@ -514,7 +514,7 @@ async function renderKb(main) {
       </div>
       <div style="margin-bottom:16px; display:flex; align-items:center; gap:10px;">
         <button id="kb-embed-all-btn" class="btn btn-secondary">전체 갱신</button>
-        <span class="muted">업로드한 문서 중 아직 반영되지 않은 것을 한 번에 처리합니다 (행이 많은 시트 등록 후 추천).</span>
+        <span class="muted">업로드한 문서·노션·캘린더를 통틀어 아직 반영되지 않은 것을 한 번에 재시도합니다 (행이 많은 시트 등록 후, 또는 "지금 갱신" 중 임베딩 실패가 있었을 때 추천).</span>
         <span id="kb-embed-all-result"></span>
       </div>
       ${docs.documents.length

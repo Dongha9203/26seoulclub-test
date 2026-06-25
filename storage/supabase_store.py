@@ -97,6 +97,50 @@ def upsert_document(doc: Document, conn=None) -> None:
     upsert_documents([doc], conn)
 
 
+def sync_documents_incrementally(
+    existing_docs: List[Document], fresh_docs: List[Document], conn=None,
+) -> Tuple[List[Document], int]:
+    """기존 문서와 새로 수집한 문서를 doc_id 기준으로 비교해 변경분만 반영합니다.
+
+    내용(title+content)이 그대로인 문서는 DB 행을 건드리지 않아 임베딩을
+    보존하고, 바뀐 문서는 갱신 후 임베딩을 비워(다음 백필 대상에 다시 잡히도록)
+    재임베딩이 필요함을 표시하고, 새 문서는 그냥 삽입하고, 더 이상 없는 문서는
+    삭제합니다.
+
+    호출자(notion/캘린더 수집기)가 doc_id를 안정적으로(콘텐츠의 외부 식별자
+    기반 uuid5 등) 만들어줘야 이 비교가 의미가 있습니다 — 매번 새 UUID를 쓰면
+    모든 문서가 "새 문서"로 보여 이 함수를 쓰는 의미가 없습니다.
+
+    Returns:
+        (실제로 갱신/삽입된 문서 목록, 삭제된 문서 수)
+    """
+    existing_by_id = {d.doc_id: d for d in existing_docs}
+    fresh_by_id = {d.doc_id: d for d in fresh_docs}
+
+    removed_ids = [doc_id for doc_id in existing_by_id if doc_id not in fresh_by_id]
+    deleted = delete_by_doc_ids(removed_ids, conn=conn)
+
+    to_upsert = []
+    ids_needing_reembed = []
+    for doc_id, fresh in fresh_by_id.items():
+        old = existing_by_id.get(doc_id)
+        if old is not None and old.title == fresh.title and old.content == fresh.content:
+            continue  # 내용 그대로 — DB 행을 건드리지 않아 임베딩 보존
+        to_upsert.append(fresh)
+        if old is not None:
+            # 기존 행의 내용이 바뀐 경우만 임베딩 무효화가 필요합니다. 신규 행은
+            # upsert_documents가 embedding=NULL인 새 행을 만들기 때문에 따로
+            # 비울 필요가 없습니다.
+            ids_needing_reembed.append(doc_id)
+
+    if to_upsert:
+        upsert_documents(to_upsert, conn=conn)
+    if ids_needing_reembed:
+        clear_embeddings(ids_needing_reembed, conn=conn)
+
+    return to_upsert, deleted
+
+
 def upsert_documents(docs: List[Document], conn=None) -> int:
     """문서 다건을 INSERT ON CONFLICT UPDATE합니다.
 
@@ -172,6 +216,24 @@ def delete_by_source_origins(source_origins: List[str], conn=None) -> int:
             c.close()
 
 
+def delete_by_doc_ids(doc_ids: List[str], conn=None) -> int:
+    """특정 doc_id 목록만 삭제합니다 (source_origin 전체가 아니라 그중 일부만
+    지워야 할 때 — 예: 캘린더 incremental 동기화에서 더 이상 존재하지 않는
+    일정만 골라 제거)."""
+    if not doc_ids:
+        return 0
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute("DELETE FROM documents WHERE doc_id = ANY(%s)", (list(doc_ids),))
+            deleted = cur.rowcount
+        c.commit()
+        return deleted
+    finally:
+        if owns_conn:
+            c.close()
+
+
 def get_all(conn=None) -> List[Document]:
     c, owns_conn = _with_conn(conn)
     try:
@@ -201,6 +263,25 @@ def get_by_source_origin(source_origin: str, conn=None) -> List[Document]:
     try:
         with c.cursor() as cur:
             cur.execute("SELECT * FROM documents WHERE source_origin = %s", (source_origin,))
+            rows = cur.fetchall()
+    finally:
+        if owns_conn:
+            c.close()
+    return [_row_to_doc(r) for r in rows]
+
+
+def get_by_source_origins(source_origins: List[str], conn=None) -> List[Document]:
+    """여러 source_origin에 속한 Document를 한 라운드트립으로 조회합니다 (cron의
+    부분 재수집처럼, 이번에 실제로 변경된 출처만 골라 비교해야 하는 경우)."""
+    if not source_origins:
+        return []
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM documents WHERE source_origin = ANY(%s)",
+                (list(source_origins),),
+            )
             rows = cur.fetchall()
     finally:
         if owns_conn:
@@ -284,6 +365,42 @@ def delete_sync_metadata_children(parent_key: str, conn=None) -> int:
             c.close()
 
 
+def get_sync_metadata_databases(parent_key: str, conn=None) -> List[Dict]:
+    """parent_key 페이지 트리 안에서 발견된 child_database(자료실 등) id 목록을 조회합니다.
+    page_key를 "db::{parent_key}::{database_id}" 형태로 저장해, get_sync_metadata_children이
+    쓰는 "{parent_key}::%" 패턴과 겹치지 않게 합니다. child_database는 행 추가/삭제가
+    last_edited_time에 반영되지 않아 별도로 "알고 있는 데이터베이스는 매번 다시 조회"하는
+    전략에 쓰입니다."""
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT * FROM sync_metadata WHERE page_key LIKE %s", (f"db::{parent_key}::%",))
+            rows = cur.fetchall()
+    finally:
+        if owns_conn:
+            c.close()
+    return [
+        {"page_key": r["page_key"], "last_notion_edited_time": r["last_notion_edited_time"],
+         "last_synced_at": r["last_synced_at"]}
+        for r in rows
+    ]
+
+
+def delete_sync_metadata_databases(parent_key: str, conn=None) -> int:
+    """parent_key 하위에서 발견된 child_database 등록 기록을 전부 지웁니다 (재수집 후
+    최신 목록으로 교체할 때 사용)."""
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute("DELETE FROM sync_metadata WHERE page_key LIKE %s", (f"db::{parent_key}::%",))
+            deleted = cur.rowcount
+        c.commit()
+        return deleted
+    finally:
+        if owns_conn:
+            c.close()
+
+
 def upsert_sync_metadata(page_key: str, last_edited: str, synced_at: str, conn=None) -> None:
     sql = """
     INSERT INTO sync_metadata (page_key, last_notion_edited_time, last_synced_at)
@@ -347,6 +464,22 @@ def update_embeddings_batch(
     try:
         with c.cursor() as cur:
             psycopg2.extras.execute_values(cur, sql, rows)
+        c.commit()
+    finally:
+        if owns_conn:
+            c.close()
+
+
+def clear_embeddings(doc_ids: List[str], conn=None) -> None:
+    """특정 doc_id 목록의 임베딩을 비웁니다. 내용이 바뀐 문서는 기존 임베딩이 더
+    이상 그 내용을 대표하지 못하므로, NULL로 비워 get_documents_missing_embedding의
+    다음 백필 대상에 다시 포함되게 합니다."""
+    if not doc_ids:
+        return
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute("UPDATE documents SET embedding = NULL WHERE doc_id = ANY(%s)", (list(doc_ids),))
         c.commit()
     finally:
         if owns_conn:

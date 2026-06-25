@@ -956,19 +956,25 @@ class TestAdminApi:
         assert res.status_code == 200
         assert res.json() == {"status": "ok", "embedded": 0, "failed": 0}
 
-    def test_embed_all_skips_notion_documents(self, client, operator):
+    def test_embed_all_includes_notion_and_calendar_documents(self, client, operator):
+        """Voyage rate limit으로 '지금 갱신' 중 임베딩이 일부 실패해도, 노션/캘린더
+        문서를 재수집하지 않고 이 버튼으로 임베딩만 재시도할 수 있어야 한다."""
         from models.document import Document
         notion_doc = Document.new(source_type="notion", source_origin="FAQ", title="T",
                                    content="C", notion_block_id="abc", is_editable=False)
+        calendar_doc = Document.new(source_type="google_calendar", source_origin="cal", title="행사",
+                                     content="일시: 2026년 7월 1일", is_editable=False)
         fake_provider = MagicMock()
+        fake_provider.embed_documents.return_value = [[0.1, 0.2], [0.3, 0.4]]
         with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
              patch("storage.supabase_store.get_documents_missing_embedding",
-                   return_value=[notion_doc]), \
-             patch("embedding_manager.get_embedding_provider", return_value=fake_provider):
+                   return_value=[notion_doc, calendar_doc]), \
+             patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
+             patch("storage.supabase_store.update_embeddings_batch") as fake_update:
             res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
         assert res.status_code == 200
-        assert res.json() == {"status": "ok", "embedded": 0, "failed": 0}
-        fake_provider.embed_documents.assert_not_called()
+        assert res.json() == {"status": "ok", "embedded": 2, "failed": 0}
+        fake_update.assert_called_once()
 
     def test_embed_all_embeds_pending_editable_documents(self, client, operator):
         from models.document import Document
@@ -1111,7 +1117,7 @@ class TestAdminApi:
     def test_manual_source_guide_success(self, client, operator):
         res = client.get("/kb/manual-source-guide", headers=self.auth_header(operator))
         assert res.status_code == 200
-        assert len(res.json()["guide"]) == 3
+        assert len(res.json()["guide"]) == 4
 
 
 class TestPerformSyncEmbeddingBackfill:
@@ -1138,7 +1144,7 @@ class TestPerformSyncEmbeddingBackfill:
         with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
              patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
-             patch("storage.supabase_store.delete_by_source_origins", return_value=0), \
+             patch("storage.supabase_store.get_by_source_type", return_value=[]), \
              patch("storage.supabase_store.upsert_documents", return_value=1), \
              patch("utils.validators.validate_notion_block_ids", return_value={}), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
@@ -1168,7 +1174,7 @@ class TestPerformSyncEmbeddingBackfill:
         with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
              patch("collectors.notion_collector.sync_notion_pages", return_value=(docs, fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
-             patch("storage.supabase_store.delete_by_source_origins", return_value=0), \
+             patch("storage.supabase_store.get_by_source_type", return_value=[]), \
              patch("storage.supabase_store.upsert_documents", return_value=3), \
              patch("utils.validators.validate_notion_block_ids", return_value={}), \
              patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
@@ -1191,7 +1197,7 @@ class TestPerformSyncEmbeddingBackfill:
         with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
              patch("collectors.notion_collector.sync_notion_pages", return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
-             patch("storage.supabase_store.delete_by_source_origins", return_value=0), \
+             patch("storage.supabase_store.get_by_source_type", return_value=[]), \
              patch("storage.supabase_store.upsert_documents", return_value=1), \
              patch("utils.validators.validate_notion_block_ids", return_value={}), \
              patch("embedding_manager.get_embedding_provider",
@@ -1218,7 +1224,7 @@ class TestPerformSyncEmbeddingBackfill:
              patch("collectors.notion_collector.sync_notion_pages_incremental",
                    return_value=([doc], fake_summary)), \
              patch("storage.supabase_store.initialize_db"), \
-             patch("storage.supabase_store.delete_by_source_origins", return_value=0), \
+             patch("storage.supabase_store.get_by_source_origins", return_value=[]), \
              patch("storage.supabase_store.upsert_documents", return_value=1), \
              patch("utils.validators.validate_notion_block_ids", return_value={}), \
              patch("storage.supabase_store.delete_old_qa_logs", return_value=0), \
@@ -1229,6 +1235,336 @@ class TestPerformSyncEmbeddingBackfill:
 
         assert result["embedding"] == {"embedded": 1, "failed": 0}
         fake_update.assert_called_once_with([(doc.doc_id, [0.3, 0.4])], "voyage-4", conn=ANY)
+
+
+class TestPerformSyncNotionIncremental:
+    """_perform_sync(수동 '지금 갱신')가 내용이 안 바뀐 노션 문서의 임베딩을
+    보존하고, 바뀐/신규/삭제만 건드리는지 검증합니다. notion_collector가
+    (block_id+part_index) 기준으로 doc_id를 고정으로 만들어주는 것에 의존합니다."""
+
+    def _write_config(self, tmp_path):
+        config = {"notion_pages": {"main": "https://notion.so/x"}, "embedding_model": "voyage-4"}
+        (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        return config
+
+    def test_unchanged_notion_doc_preserves_embedding(self, tmp_path, monkeypatch):
+        import api.sync_notion as sync_notion_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(sync_notion_module, "_root", tmp_path)
+
+        unchanged = Document.new(source_type="notion", source_origin="메인페이지",
+                                  title="T", content="C", notion_block_id="b1")
+        unchanged.doc_id = "fixed-id-1"
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
+
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages", return_value=([unchanged], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.get_by_source_type", return_value=[unchanged]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.clear_embeddings") as fake_clear, \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            result = sync_notion_module._perform_sync()
+
+        assert result["inserted"] == 0
+        assert result["sources"] == {}
+        fake_upsert.assert_not_called()
+        fake_clear.assert_not_called()
+
+    def test_changed_notion_doc_upserts_and_clears_embedding(self, tmp_path, monkeypatch):
+        import api.sync_notion as sync_notion_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(sync_notion_module, "_root", tmp_path)
+
+        old = Document.new(source_type="notion", source_origin="메인페이지",
+                            title="T", content="옛 내용", notion_block_id="b1")
+        old.doc_id = "fixed-id-1"
+        fresh = Document.new(source_type="notion", source_origin="메인페이지",
+                              title="T", content="새 내용", notion_block_id="b1")
+        fresh.doc_id = "fixed-id-1"
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
+
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages", return_value=([fresh], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.get_by_source_type", return_value=[old]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.clear_embeddings") as fake_clear, \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            result = sync_notion_module._perform_sync()
+
+        assert result["inserted"] == 1
+        assert result["sources"] == {"메인페이지": 1}
+        fake_upsert.assert_called_once_with([fresh], conn=ANY)
+        fake_clear.assert_called_once_with(["fixed-id-1"], conn=ANY)
+
+    def test_removed_notion_page_is_deleted(self, tmp_path, monkeypatch):
+        """노션에서 페이지/섹션이 통째로 사라지면(워크스페이스에서 삭제·연결해제),
+        더 이상 fresh 목록에 없는 기존 문서는 삭제되어야 한다."""
+        import api.sync_notion as sync_notion_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(sync_notion_module, "_root", tmp_path)
+
+        gone = Document.new(source_type="notion", source_origin="삭제된 페이지",
+                             title="T", content="C", notion_block_id="b-gone")
+        gone.doc_id = "fixed-id-gone"
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 0, "skipped": False}}
+
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages", return_value=([], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.get_by_source_type", return_value=[gone]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.delete_by_doc_ids") as fake_delete, \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            result = sync_notion_module._perform_sync()
+
+        assert result["inserted"] == 0
+        fake_upsert.assert_not_called()
+        fake_delete.assert_called_once_with(["fixed-id-gone"], conn=ANY)
+
+
+class TestCronPerformIncrementalSyncNotionIncremental:
+    """cron 경로(_perform_incremental_sync)도 수동 '지금 갱신'과 동일하게 chunk
+    단위로 변경분만 갱신/임베딩 보존해야 한다. 추가로, cron은 메타데이터상
+    변경이 감지된 페이지만 재수집하므로(sync_notion_pages_incremental), 변경되지
+    않은 페이지의 기존 문서는 비교 대상에서조차 제외되어야 한다(조회 자체를
+    하지 않아 임베딩이 그대로 보존됨)."""
+
+    def _write_config(self, tmp_path):
+        config = {"notion_pages": {"main": "https://notion.so/x"}, "embedding_model": "voyage-4"}
+        (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+        return config
+
+    def test_unchanged_notion_doc_preserves_embedding(self, tmp_path, monkeypatch):
+        import api.cron.sync_notion as cron_sync_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(cron_sync_module, "_root", tmp_path)
+
+        unchanged = Document.new(source_type="notion", source_origin="메인페이지",
+                                  title="T", content="C", notion_block_id="b1")
+        unchanged.doc_id = "fixed-id-1"
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
+
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages_incremental",
+                   return_value=([unchanged], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.get_by_source_origins", return_value=[unchanged]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.clear_embeddings") as fake_clear, \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("storage.supabase_store.delete_old_qa_logs", return_value=0), \
+             patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            result = cron_sync_module._perform_incremental_sync()
+
+        assert result["inserted"] == 0
+        assert result["sources"] == {}
+        fake_upsert.assert_not_called()
+        fake_clear.assert_not_called()
+
+    def test_changed_notion_doc_upserts_and_clears_embedding(self, tmp_path, monkeypatch):
+        import api.cron.sync_notion as cron_sync_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(cron_sync_module, "_root", tmp_path)
+
+        old = Document.new(source_type="notion", source_origin="메인페이지",
+                            title="T", content="옛 내용", notion_block_id="b1")
+        old.doc_id = "fixed-id-1"
+        fresh = Document.new(source_type="notion", source_origin="메인페이지",
+                              title="T", content="새 내용", notion_block_id="b1")
+        fresh.doc_id = "fixed-id-1"
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
+
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages_incremental",
+                   return_value=([fresh], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.get_by_source_origins", return_value=[old]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.clear_embeddings") as fake_clear, \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("storage.supabase_store.delete_old_qa_logs", return_value=0), \
+             patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            result = cron_sync_module._perform_incremental_sync()
+
+        assert result["inserted"] == 1
+        assert result["sources"] == {"메인페이지": 1}
+        fake_upsert.assert_called_once_with([fresh], conn=ANY)
+        fake_clear.assert_called_once_with(["fixed-id-1"], conn=ANY)
+
+    def test_removed_block_within_recollected_page_is_deleted(self, tmp_path, monkeypatch):
+        """재수집된 페이지 안에서 사라진 block은 삭제되어야 한다."""
+        import api.cron.sync_notion as cron_sync_module
+        from models.document import Document
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(cron_sync_module, "_root", tmp_path)
+
+        gone = Document.new(source_type="notion", source_origin="메인페이지",
+                             title="T", content="C", notion_block_id="b-gone")
+        gone.doc_id = "fixed-id-gone"
+        survivor = Document.new(source_type="notion", source_origin="메인페이지",
+                                 title="T2", content="C2", notion_block_id="b-keep")
+        survivor.doc_id = "fixed-id-keep"
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 1, "skipped": False}}
+
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages_incremental",
+                   return_value=([survivor], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.get_by_source_origins", return_value=[gone, survivor]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.delete_by_doc_ids") as fake_delete, \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("storage.supabase_store.delete_old_qa_logs", return_value=0), \
+             patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            result = cron_sync_module._perform_incremental_sync()
+
+        assert result["inserted"] == 0
+        fake_upsert.assert_not_called()
+        fake_delete.assert_called_once_with(["fixed-id-gone"], conn=ANY)
+
+    def test_unchanged_page_is_never_queried_for_diff(self, tmp_path, monkeypatch):
+        """메타데이터상 변경이 없어 재수집되지 않은 페이지(source_origin이 docs에
+        전혀 나타나지 않음)는 get_by_source_origins 호출 범위에도 포함되지 않아야
+        한다 — 비교 대상에 넣지 않는 것 자체가 임베딩 보존을 보장하는 방법."""
+        import api.cron.sync_notion as cron_sync_module
+
+        self._write_config(tmp_path)
+        monkeypatch.setattr(cron_sync_module, "_root", tmp_path)
+
+        fake_summary = {"main": {"page_name": "메인페이지", "doc_count": 0, "skipped": True,
+                                  "reason": "변경 없음"}}
+
+        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
+             patch("collectors.notion_collector.sync_notion_pages_incremental",
+                   return_value=([], fake_summary)), \
+             patch("storage.supabase_store.initialize_db"), \
+             patch("storage.supabase_store.get_by_source_origins", return_value=[]) as fake_get, \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("utils.validators.validate_notion_block_ids", return_value={}), \
+             patch("storage.supabase_store.delete_old_qa_logs", return_value=0), \
+             patch("embedding_manager.get_embedding_provider", return_value=MagicMock()), \
+             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+            result = cron_sync_module._perform_incremental_sync()
+
+        assert result["inserted"] == 0
+        fake_get.assert_not_called()
+        fake_upsert.assert_not_called()
+
+
+class TestSyncCalendarsIncremental:
+    """_sync_calendars가 내용이 안 바뀐 일정의 임베딩을 보존하고, 바뀐/신규/삭제만
+    건드리는지 검증합니다 (캘린더 collector가 doc_id를 고정으로 만들어주는 것에
+    의존하므로, 가짜 Document에도 같은 doc_id 규칙을 직접 부여해 둡니다)."""
+
+    def _make_doc(self, doc_id, title, content, source_origin="google_calendar:cal@x.com"):
+        from models.document import Document
+        d = Document.new(source_type="google_calendar", source_origin=source_origin,
+                          title=title, content=content, is_editable=False)
+        d.doc_id = doc_id
+        return d
+
+    _CAL_URL = "https://calendar.google.com/calendar/embed?src=cal%40x.com"
+    _ORIGIN = "google_calendar:cal@x.com"
+
+    def test_unchanged_event_is_left_alone_preserving_embedding(self):
+        from api.sync_notion import _sync_calendars
+        unchanged = self._make_doc("id-1", "행사A", "내용A", source_origin=self._ORIGIN)
+
+        with patch("collectors.calendar_collector.collect_google_calendar", return_value=[unchanged]), \
+             patch("storage.supabase_store.get_by_source_origin", return_value=[unchanged]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.clear_embeddings") as fake_clear, \
+             patch("storage.supabase_store.delete_by_doc_ids") as fake_delete:
+            docs, sources = _sync_calendars({"google_calendars": [self._CAL_URL]}, conn=MagicMock())
+
+        assert docs == []
+        assert sources == {self._ORIGIN: 0}
+        fake_upsert.assert_not_called()
+        fake_clear.assert_not_called()
+        fake_delete.assert_called_once_with([], conn=ANY)
+
+    def test_changed_event_upserts_and_clears_embedding(self):
+        from api.sync_notion import _sync_calendars
+        old = self._make_doc("id-1", "행사A", "예전 내용", source_origin=self._ORIGIN)
+        fresh = self._make_doc("id-1", "행사A", "바뀐 내용", source_origin=self._ORIGIN)
+
+        with patch("collectors.calendar_collector.collect_google_calendar", return_value=[fresh]), \
+             patch("storage.supabase_store.get_by_source_origin", return_value=[old]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.clear_embeddings") as fake_clear, \
+             patch("storage.supabase_store.delete_by_doc_ids"):
+            docs, sources = _sync_calendars({"google_calendars": [self._CAL_URL]}, conn=MagicMock())
+
+        assert docs == [fresh]
+        assert sources == {self._ORIGIN: 1}
+        fake_upsert.assert_called_once_with([fresh], conn=ANY)
+        fake_clear.assert_called_once_with(["id-1"], conn=ANY)
+
+    def test_new_event_upserts_without_clearing_embedding(self):
+        """신규 행은 upsert_documents가 만드는 새 행이 이미 embedding=NULL이라
+        clear_embeddings를 호출할 필요가 없다."""
+        from api.sync_notion import _sync_calendars
+        new_doc = self._make_doc("id-new", "신규 행사", "내용", source_origin=self._ORIGIN)
+
+        with patch("collectors.calendar_collector.collect_google_calendar", return_value=[new_doc]), \
+             patch("storage.supabase_store.get_by_source_origin", return_value=[]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.clear_embeddings") as fake_clear, \
+             patch("storage.supabase_store.delete_by_doc_ids"):
+            docs, sources = _sync_calendars({"google_calendars": [self._CAL_URL]}, conn=MagicMock())
+
+        assert docs == [new_doc]
+        assert sources == {self._ORIGIN: 1}
+        fake_upsert.assert_called_once_with([new_doc], conn=ANY)
+        fake_clear.assert_not_called()
+
+    def test_removed_event_is_deleted(self):
+        """더 이상 캘린더에 없는(취소되었거나 -7일 창 밖으로 밀려난) 일정은, 일정이
+        0건으로 수집되는 경우(전부 사라짐)에도 source_origin을 URL에서 바로 계산해
+        기존 행을 정리할 수 있어야 한다."""
+        from api.sync_notion import _sync_calendars
+        gone = self._make_doc("id-gone", "지난 행사", "내용", source_origin=self._ORIGIN)
+
+        with patch("collectors.calendar_collector.collect_google_calendar", return_value=[]), \
+             patch("storage.supabase_store.get_by_source_origin", return_value=[gone]), \
+             patch("storage.supabase_store.upsert_documents") as fake_upsert, \
+             patch("storage.supabase_store.clear_embeddings"), \
+             patch("storage.supabase_store.delete_by_doc_ids") as fake_delete:
+            docs, sources = _sync_calendars({"google_calendars": [self._CAL_URL]}, conn=MagicMock())
+
+        assert docs == []
+        assert sources == {self._ORIGIN: 0}
+        fake_upsert.assert_not_called()
+        fake_delete.assert_called_once_with(["id-gone"], conn=ANY)
+
+    def test_calendar_collection_failure_is_skipped_not_raised(self):
+        from api.sync_notion import _sync_calendars
+        with patch("collectors.calendar_collector.collect_google_calendar",
+                   side_effect=ValueError("비공개 캘린더")):
+            docs, sources = _sync_calendars({"google_calendars": [self._CAL_URL]}, conn=MagicMock())
+        assert (docs, sources) == ([], {})
 
 
 # ══════════════════════════════════════════════════════════════

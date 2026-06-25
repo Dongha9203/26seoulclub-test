@@ -25,3 +25,7 @@ python-multipart>=0.0.9
 # Stage 4: admin dashboard auth
 pyjwt>=2.9.0
 bcrypt>=4.2.0
+
+# 구글 캘린더 수집 (공개 ICS 피드 파싱 + 반복 일정 전개)
+icalendar>=6.0,<8
+recurring-ical-events>=3.0,<4
