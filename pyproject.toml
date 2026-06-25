@@ -20,6 +20,8 @@ dependencies = [
     "python-multipart>=0.0.9",
     "pyjwt>=2.9.0",
     "bcrypt>=4.2.0",
+    "icalendar>=6.0,<8",
+    "recurring-ical-events>=3.0,<4",
 ]
 
 [tool.vercel]
