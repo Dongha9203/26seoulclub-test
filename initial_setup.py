@@ -112,8 +112,32 @@ def main():
             except ValueError as e:
                 print(f"  ✗ 구글시트 수집 실패: {e}")
 
+    # ── Airtable 수집 ──────────────────────────────────────────────────────
+    print("\n[4/5] Airtable 수집...")
+    airtable_views = config.get("airtable_views", [])
+
+    if not airtable_views:
+        print("  ℹ config.json의 airtable_views가 비어있습니다. (건너뜁니다)")
+    else:
+        from collectors.airtable_collector import collect_airtable
+        for view_cfg in airtable_views:
+            base_id = view_cfg.get("base_id", "")
+            table_name = view_cfg.get("table_name", "")
+            view = view_cfg.get("view")
+            if not base_id or not table_name or "{{" in base_id:
+                print(f"  ⚠ base_id 또는 table_name이 설정되지 않은 항목을 건너뜁니다: {view_cfg}")
+                continue
+            try:
+                airtable_docs = collect_airtable(base_id, table_name, view)
+                all_docs.extend(airtable_docs)
+                if airtable_docs:
+                    delete_by_source_origin(airtable_docs[0].source_origin)
+                print(f"  ✓ {table_name} (base: {base_id[:10]}...): {len(airtable_docs)}개 Document 수집")
+            except (EnvironmentError, ValueError) as e:
+                print(f"  ✗ Airtable 수집 실패: {e}")
+
     # ── Supabase Postgres 저장 ────────────────────────────────────────────
-    print("\n[4/4] Supabase Postgres에 저장...")
+    print("\n[5/5] Supabase Postgres에 저장...")
     if all_docs:
         inserted = upsert_documents(all_docs)
         print(f"  ✓ {inserted}개 Document 저장 완료")

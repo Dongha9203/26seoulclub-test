@@ -71,6 +71,42 @@ def _sync_calendars(config: dict, conn) -> tuple:
     return changed_docs, sources
 
 
+def _sync_airtable(config: dict, conn) -> tuple:
+    """config.json의 airtable_views 목록을 incremental하게 동기화합니다."""
+    from collectors.airtable_collector import collect_airtable
+    from storage.supabase_store import get_by_source_origin, sync_documents_incrementally
+
+    changed_docs = []
+    sources: dict = {}
+
+    for view_cfg in config.get("airtable_views", []):
+        base_id = view_cfg.get("base_id", "")
+        table_name = view_cfg.get("table_name", "")
+        view = view_cfg.get("view")
+        if not base_id or not table_name:
+            continue
+        try:
+            fresh_docs = collect_airtable(base_id, table_name, view)
+        except (EnvironmentError, ValueError):
+            logger.exception("Airtable 수집 실패 (건너뜀): base=%s, table=%s", base_id, table_name)
+            continue
+
+        source_origin = f"airtable:{base_id}:{table_name}"
+        existing_docs = get_by_source_origin(source_origin, conn=conn)
+        changed, deleted = sync_documents_incrementally(existing_docs, fresh_docs, conn=conn)
+
+        if changed or deleted:
+            logger.info(
+                "Airtable incremental 동기화: %s — 변경 %d건, 삭제 %d건, 변경없음(보존) %d건",
+                source_origin, len(changed), deleted, len(fresh_docs) - len(changed),
+            )
+
+        changed_docs.extend(changed)
+        sources[source_origin] = len(changed)
+
+    return changed_docs, sources
+
+
 def _perform_sync() -> dict:
     """노션 3페이지 + 구글 캘린더 전체 재수집 로직 (수동/cron 공통)."""
     import json as _json
@@ -123,15 +159,20 @@ def _perform_sync() -> dict:
         inserted += len(calendar_docs)
         sources.update(calendar_sources)
 
-        # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 갱신 직후 바로
-        # 검색에 반영되도록, 여기서 임베딩이 없는 노션/캘린더 문서를 자동으로 백필합니다.
+        # Airtable도 동일한 "지금 갱신"에 묶어서 동기화합니다.
+        airtable_docs, airtable_sources = _sync_airtable(config, conn)
+        docs.extend(airtable_docs)
+        inserted += len(airtable_docs)
+        sources.update(airtable_sources)
+
+        # 갱신 직후 바로 검색에 반영되도록, 임베딩이 없는 문서를 자동으로 백필합니다.
         model = config.get("embedding_model")
         embedded, embed_failed = 0, 0
         try:
             provider = get_embedding_provider(config)
             pending = [
                 d for d in get_documents_missing_embedding(model, conn=conn)
-                if d.source_type in ("notion", "google_calendar")
+                if d.source_type in ("notion", "google_calendar", "airtable")
             ]
             embedded, embed_failed = backfill_embeddings(pending, provider, model, conn=conn)
         except Exception:

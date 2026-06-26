@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 @dataclass
 class Document:
     doc_id: str
-    source_type: str        # "notion" | "google_sheet" | "docx" | "pdf" | "excel" | "hwp_converted"
+    source_type: str        # "notion" | "google_sheet" | "airtable" | "google_calendar" | "docx" | "pdf" | "excel" | "hwp_converted"
     source_origin: str      # 페이지명 또는 파일명
     title: str
     content: str

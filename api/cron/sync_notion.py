@@ -41,7 +41,7 @@ _QA_LOG_RETENTION_DAYS = 365
 def _perform_incremental_sync() -> dict:
     """변경된 노션 페이지만 재수집 (cron 전용 로직)."""
     import json as _json
-    from api.sync_notion import _sync_calendars
+    from api.sync_notion import _sync_calendars, _sync_airtable
     from collectors.notion_collector import sync_notion_pages_incremental
     from embedding_manager import get_embedding_provider, backfill_embeddings
     from storage.supabase_store import (
@@ -87,15 +87,20 @@ def _perform_incremental_sync() -> dict:
         inserted += len(calendar_docs)
         sources.update(calendar_sources)
 
-        # 노션 동기화는 본문만 가져오고 임베딩은 별도 단계였습니다. 변경분이 바로
-        # 검색에 반영되도록, 여기서 임베딩이 없는 노션/캘린더 문서를 자동으로 백필합니다.
+        # Airtable도 매일 자동 갱신에 묶습니다.
+        airtable_docs, airtable_sources = _sync_airtable(config, conn)
+        docs.extend(airtable_docs)
+        inserted += len(airtable_docs)
+        sources.update(airtable_sources)
+
+        # 변경분이 바로 검색에 반영되도록, 임베딩이 없는 문서를 자동으로 백필합니다.
         model = config.get("embedding_model")
         embedded, embed_failed = 0, 0
         try:
             provider = get_embedding_provider(config)
             pending = [
                 d for d in get_documents_missing_embedding(model, conn=conn)
-                if d.source_type in ("notion", "google_calendar")
+                if d.source_type in ("notion", "google_calendar", "airtable")
             ]
             embedded, embed_failed = backfill_embeddings(pending, provider, model, conn=conn)
         except Exception:
