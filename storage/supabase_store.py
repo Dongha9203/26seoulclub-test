@@ -50,6 +50,18 @@ CREATE TABLE IF NOT EXISTS sync_metadata (
 )
 """
 
+_CREATE_CRON_RUN_LOG_SQL = """
+CREATE TABLE IF NOT EXISTS cron_run_log (
+    id            TEXT PRIMARY KEY,
+    job_name      TEXT        NOT NULL,
+    started_at    TIMESTAMPTZ NOT NULL,
+    finished_at   TIMESTAMPTZ,
+    status        TEXT        NOT NULL,
+    result        JSONB,
+    error_message TEXT
+)
+"""
+
 _CREATE_QA_LOG_SQL = """
 CREATE TABLE IF NOT EXISTS qa_log (
     log_id                      TEXT PRIMARY KEY,
@@ -82,6 +94,7 @@ def initialize_db(conn=None) -> None:
             cur.execute(_CREATE_DOCUMENTS_SQL)
             cur.execute(_CREATE_SYNC_METADATA_SQL)
             cur.execute(_CREATE_QA_LOG_SQL)
+            cur.execute(_CREATE_CRON_RUN_LOG_SQL)
             cur.execute("CREATE INDEX IF NOT EXISTS idx_source_type ON documents(source_type)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_source_origin ON documents(source_origin)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_category ON documents(category)")
@@ -744,6 +757,52 @@ def get_failure_cause_counts(
         if owns_conn:
             c.close()
     return {r["failure_cause"]: r["cnt"] for r in rows}
+
+
+def insert_cron_run_log(run_id: str, job_name: str, conn=None) -> None:
+    """cron 실행 시작 시 'running' 상태로 행을 삽입합니다."""
+    sql = """
+    INSERT INTO cron_run_log (id, job_name, started_at, status)
+    VALUES (%s, %s, %s, 'running')
+    """
+    now = datetime.now(timezone.utc)
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute(sql, (run_id, job_name, now))
+        c.commit()
+    finally:
+        if owns_conn:
+            c.close()
+
+
+def update_cron_run_log(
+    run_id: str,
+    status: str,
+    result: Optional[Dict] = None,
+    error_message: Optional[str] = None,
+    conn=None,
+) -> None:
+    """cron 실행 완료(ok/error) 시 결과를 업데이트합니다."""
+    import json as _json
+    sql = """
+    UPDATE cron_run_log
+    SET finished_at   = %s,
+        status        = %s,
+        result        = %s,
+        error_message = %s
+    WHERE id = %s
+    """
+    now = datetime.now(timezone.utc)
+    result_json = _json.dumps(result, ensure_ascii=False) if result is not None else None
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute(sql, (now, status, result_json, error_message, run_id))
+        c.commit()
+    finally:
+        if owns_conn:
+            c.close()
 
 
 def _row_to_doc(row) -> Document:

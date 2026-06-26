@@ -20,6 +20,7 @@ import json
 import logging
 import os
 import sys
+import uuid
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
 
@@ -125,8 +126,30 @@ class handler(BaseHTTPRequestHandler):
         self._handle()
 
     def _handle(self):
+        from storage.supabase_store import (
+            get_connection, initialize_db,
+            insert_cron_run_log, update_cron_run_log,
+        )
+        # initialize_db를 먼저 호출해 cron_run_log 테이블이 없는 환경에서도 첫 실행부터 기록되도록 합니다.
+        log_conn = get_connection()
+        try:
+            initialize_db(conn=log_conn)
+            run_id = str(uuid.uuid4())
+            insert_cron_run_log(run_id, "sync_notion", conn=log_conn)
+        except Exception:
+            logger.exception("cron_run_log 시작 기록 실패 (무시하고 계속)")
+            run_id = str(uuid.uuid4())
+        finally:
+            log_conn.close()
+
         try:
             result = _perform_incremental_sync()
+            try:
+                log_conn = get_connection()
+                update_cron_run_log(run_id, "ok", result=result, conn=log_conn)
+                log_conn.close()
+            except Exception:
+                logger.exception("cron_run_log 완료 기록 실패 (무시)")
             body = json.dumps(result, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -135,6 +158,12 @@ class handler(BaseHTTPRequestHandler):
             self.wfile.write(body)
         except Exception as e:
             logger.exception("cron sync_notion 처리 중 오류 발생")
+            try:
+                log_conn = get_connection()
+                update_cron_run_log(run_id, "error", error_message=str(e), conn=log_conn)
+                log_conn.close()
+            except Exception:
+                logger.exception("cron_run_log 오류 기록 실패 (무시)")
             body = json.dumps({"status": "error", "message": str(e)},
                                ensure_ascii=False).encode("utf-8")
             self.send_response(500)
