@@ -89,6 +89,51 @@ function _isKstToday(utcIsoString) {
   return kst === now;
 }
 
+function _showCronModal(data, cls) {
+  let title, bodyHtml;
+  if (cls === "status-warn" && !data.status) {
+    title = "동기화 기록 없음 안내";
+    bodyHtml = `<p>동기화가 한 번도 실행된 기록이 없습니다.</p>
+      <p><strong>조치:</strong> Knowledge Base 메뉴 →<br>
+      <strong>'지금 갱신'</strong> 버튼을 눌러주세요.<br>
+      이후 매일 자동으로 실행됩니다.</p>`;
+  } else if (cls === "status-warn") {
+    const t = new Date(data.started_at).toLocaleString("ko-KR", {
+      timeZone: "Asia/Seoul", month: "numeric", day: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    });
+    title = "동기화 미실행 안내";
+    bodyHtml = `<p>최근 실행: ${t}</p>
+      <p>자동 동기화가 오늘 실행되지 않았습니다.</p>
+      <p><strong>조치:</strong> Knowledge Base 메뉴 →<br>
+      <strong>'지금 갱신'</strong> 버튼을 눌러주세요.</p>`;
+  } else {
+    const t = data.started_at ? new Date(data.started_at).toLocaleString("ko-KR", {
+      timeZone: "Asia/Seoul", month: "numeric", day: "numeric",
+      hour: "2-digit", minute: "2-digit",
+    }) : "-";
+    title = "동기화 오류 안내";
+    bodyHtml = `<p>최근 실행: ${t}</p>
+      ${data.error_message ? `<p>오류 내용:<br><code>${escapeHtml(data.error_message)}</code></p>` : ""}
+      <p><strong>조치:</strong> Knowledge Base 메뉴 → <strong>'지금 갱신'</strong>으로
+      재시도하거나, 오류가 반복되면 서버 로그를 확인해주세요.</p>`;
+  }
+  const overlay = document.createElement("div");
+  overlay.className = "cron-modal-overlay";
+  overlay.innerHTML = `
+    <div class="cron-modal">
+      <h3>${title}</h3>
+      <div class="modal-body">${bodyHtml}</div>
+      <div class="modal-footer">
+        <button class="btn btn-secondary cron-modal-close">닫기</button>
+      </div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.querySelector(".cron-modal-close").addEventListener("click", close);
+  overlay.addEventListener("click", (e) => { if (e.target === overlay) close(); });
+}
+
 async function renderCronStatus() {
   const el = document.getElementById("cron-status-banner");
   if (!el) return;
@@ -121,6 +166,12 @@ async function renderCronStatus() {
     el.innerHTML =
       `<span class="cron-label">${icon} ${label}</span>` +
       (timeText ? `<span class="cron-time">${timeText}</span>` : "");
+    if (cls !== "status-ok") {
+      el.setAttribute("role", "button");
+      el.setAttribute("tabindex", "0");
+      el.onclick = () => _showCronModal(d, cls);
+      el.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") _showCronModal(d, cls); };
+    }
   } catch {
     /* 배너 오류는 조용히 무시 */
   }
