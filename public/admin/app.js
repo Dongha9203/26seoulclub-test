@@ -671,6 +671,7 @@ async function renderKb(main) {
       resultEl.innerHTML = `<span class="success-text">${escapeHtml(result.summary_text)}</span>`;
       document.getElementById("last-sync-text").textContent =
         `마지막 갱신: ${new Date(result.last_synced_at).toLocaleString("ko-KR")} (수동)`;
+      renderCronStatus();
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">갱신 실패: ${escapeHtml(err.message)}</span>`;
     } finally {
