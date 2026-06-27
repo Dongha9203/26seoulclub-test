@@ -7,6 +7,8 @@ Vercel의 Python 빌더가 fastapi 의존성이 있으면 프로젝트 전체에
 (/api/chat, /api/admin/*, /api/sync_notion, /api/cron/sync_notion).
 """
 
+import logging
+import uuid
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -16,6 +18,8 @@ from api.chat import app as chat_app
 from api.admin import app as admin_app
 from api.sync_notion import _perform_sync
 from api.cron.sync_notion import _perform_incremental_sync
+
+logger = logging.getLogger(__name__)
 
 app = FastAPI()
 app.include_router(chat_app.router)
@@ -29,7 +33,35 @@ def sync_notion_route():
 
 @app.get("/api/cron/sync_notion")
 def cron_sync_notion_route():
-    return _perform_incremental_sync()
+    from storage.supabase_store import get_connection, initialize_db, insert_cron_run_log, update_cron_run_log
+    run_id = str(uuid.uuid4())
+    log_conn = get_connection()
+    try:
+        initialize_db(conn=log_conn)
+        insert_cron_run_log(run_id, "sync_notion", conn=log_conn)
+    except Exception:
+        logger.exception("cron_run_log 시작 기록 실패 (무시하고 계속)")
+    finally:
+        log_conn.close()
+
+    try:
+        result = _perform_incremental_sync()
+        try:
+            log_conn = get_connection()
+            update_cron_run_log(run_id, "ok", result=result, conn=log_conn)
+            log_conn.close()
+        except Exception:
+            logger.exception("cron_run_log 완료 기록 실패 (무시)")
+        return result
+    except Exception as e:
+        logger.exception("cron sync_notion 처리 중 오류")
+        try:
+            log_conn = get_connection()
+            update_cron_run_log(run_id, "error", error_message=str(e), conn=log_conn)
+            log_conn.close()
+        except Exception:
+            logger.exception("cron_run_log 오류 기록 실패 (무시)")
+        raise
 
 
 # 운영 배포(Vercel)에서는 public/ 정적 파일을 플랫폼이 직접 서빙해 이 함수까지
