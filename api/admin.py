@@ -397,10 +397,12 @@ def delete_document(doc_id: str, operator_email: str = Depends(get_current_opera
     with conn.cursor() as cur:
         cur.execute("SELECT is_editable FROM documents WHERE doc_id = %s", (doc_id,))
         row = cur.fetchone()
-        if row is None:
-            raise HTTPException(status_code=404, detail="존재하지 않는 문서입니다.")
-        if not row["is_editable"]:
-            raise HTTPException(status_code=403, detail="노션 소스 문서는 대시보드에서 삭제할 수 없습니다.")
+    conn.rollback()
+    if row is None:
+        raise HTTPException(status_code=404, detail="존재하지 않는 문서입니다.")
+    if not row["is_editable"]:
+        raise HTTPException(status_code=403, detail="노션 소스 문서는 대시보드에서 삭제할 수 없습니다.")
+    with conn.cursor() as cur:
         cur.execute("DELETE FROM documents WHERE doc_id = %s", (doc_id,))
     conn.commit()
     return {"status": "ok"}

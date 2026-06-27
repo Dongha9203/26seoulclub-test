@@ -951,8 +951,7 @@ class TestAdminApi:
         assert res.json()["inserted"] >= 1
 
     def test_embed_all_no_pending_documents_returns_zero(self, client, operator):
-        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
-             patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
+        with patch("storage.supabase_store.get_documents_missing_embedding", return_value=[]):
             res = client.post("/kb/documents/embed-all", headers=self.auth_header(operator))
         assert res.status_code == 200
         assert res.json() == {"status": "ok", "embedded": 0, "failed": 0}
@@ -967,8 +966,7 @@ class TestAdminApi:
                                      content="일시: 2026년 7월 1일", is_editable=False)
         fake_provider = MagicMock()
         fake_provider.embed_documents.return_value = [[0.1, 0.2], [0.3, 0.4]]
-        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
-             patch("storage.supabase_store.get_documents_missing_embedding",
+        with patch("storage.supabase_store.get_documents_missing_embedding",
                    return_value=[notion_doc, calendar_doc]), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
              patch("storage.supabase_store.update_embeddings_batch") as fake_update:
@@ -983,8 +981,7 @@ class TestAdminApi:
                             content="답변1")
         fake_provider = MagicMock()
         fake_provider.embed_documents.return_value = [[0.1, 0.2]]
-        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
-             patch("storage.supabase_store.get_documents_missing_embedding",
+        with patch("storage.supabase_store.get_documents_missing_embedding",
                    return_value=[doc]), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
              patch("storage.supabase_store.update_embeddings_batch") as fake_update:
@@ -999,8 +996,7 @@ class TestAdminApi:
                             content="답변1")
         fake_provider = MagicMock()
         fake_provider.embed_documents.side_effect = ConnectionError("voyage api down")
-        with patch("storage.supabase_store.get_connection", return_value=MagicMock()), \
-             patch("storage.supabase_store.get_documents_missing_embedding",
+        with patch("storage.supabase_store.get_documents_missing_embedding",
                    return_value=[doc]), \
              patch("embedding_manager.get_embedding_provider", return_value=fake_provider), \
              patch("storage.supabase_store.update_embeddings_batch") as fake_update:
