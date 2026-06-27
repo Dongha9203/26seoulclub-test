@@ -20,7 +20,6 @@ def get_connection():
 
 
 def _with_conn(conn):
-    """conn이 주어지면 그대로 사용(닫지 않음), 없으면 새로 열고 호출자가 닫아야 함."""
     owns_conn = conn is None
     return (conn or get_connection()), owns_conn
 

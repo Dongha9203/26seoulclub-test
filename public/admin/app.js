@@ -60,6 +60,26 @@ document.getElementById("logout-button").addEventListener("click", () => {
   window.location.replace("login.html");
 });
 
+// ── 응답 캐시 (설정 화면 메뉴 전환 속도 개선) ────────────────────
+const _apiCache = {};
+const _CACHE_TTL_MS = {
+  "/settings": 5 * 60 * 1000,
+  "/kb/manual-source-guide": 60 * 60 * 1000,
+};
+
+async function cachedApi(path) {
+  const ttl = _CACHE_TTL_MS[path];
+  const entry = _apiCache[path];
+  if (ttl && entry && Date.now() - entry.ts < ttl) return entry.data;
+  const data = await api(path);
+  if (ttl) _apiCache[path] = { data, ts: Date.now() };
+  return data;
+}
+
+function invalidateCache(prefix) {
+  Object.keys(_apiCache).forEach((k) => { if (k.startsWith(prefix)) delete _apiCache[k]; });
+}
+
 // ── 공용 헬퍼 ──────────────────────────────────────────────────
 
 function escapeHtml(s) {
@@ -407,7 +427,7 @@ async function renderFailureReport(main, startDate = null, endDate = null) {
 // ── ③ 운영설정 ─────────────────────────────────────────────────
 
 async function renderOperationTeam(main) {
-  const settings = await api("/settings");
+  const settings = await cachedApi("/settings");
   const t = settings.operation_team;
   main.innerHTML = `<h1>담당자 연락처 문구</h1>` + cardWithDetail(
     "운영팀 연락처", "검색 실패/에스컬레이션 응답에 표시되는 연락처입니다.",
@@ -445,6 +465,7 @@ async function renderOperationTeam(main) {
           operating_hours: f.operating_hours.value,
         }),
       });
+      invalidateCache("/settings");
       resultEl.innerHTML = `<span class="success-text">저장되었습니다.</span>`;
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
@@ -454,7 +475,7 @@ async function renderOperationTeam(main) {
 
 async function renderKb(main) {
   const [docs, lastSync, guide] = await Promise.all([
-    api("/kb/documents"), api("/kb/notion/last-sync"), api("/kb/manual-source-guide"),
+    api("/kb/documents"), api("/kb/notion/last-sync"), cachedApi("/kb/manual-source-guide"),
   ]);
 
   const guideRows = guide.guide.map(
@@ -652,7 +673,7 @@ const TONE_LABELS = {
 };
 
 async function renderTone(main) {
-  const settings = await api("/settings");
+  const settings = await cachedApi("/settings");
   const fields = Object.entries(TONE_LABELS).map(([key, label]) => `
     <label>${escapeHtml(label)}</label>
     <textarea name="${key}" rows="2" required>${escapeHtml(settings.tone_elements[key])}</textarea>
@@ -682,6 +703,7 @@ async function renderTone(main) {
     const resultEl = document.getElementById("tone-result");
     try {
       await api("/settings/tone", { method: "PUT", body: JSON.stringify(payload) });
+      invalidateCache("/settings");
       resultEl.innerHTML = `<span class="success-text">저장되었습니다.</span>`;
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
@@ -718,7 +740,7 @@ function _parseKeywordsForm(form, labels) {
 }
 
 async function renderKeywords(main) {
-  const settings = await api("/settings");
+  const settings = await cachedApi("/settings");
   const situationKeywords = settings.situation_keywords || {};
   const forbiddenWords = settings.forbidden_words || {};
 
@@ -760,6 +782,7 @@ async function renderKeywords(main) {
         method: "PUT",
         body: JSON.stringify(_parseKeywordsForm(e.target, SITUATION_KEYWORD_LABELS)),
       });
+      invalidateCache("/settings");
       resultEl.innerHTML = `<span class="success-text">저장되었습니다.</span>`;
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
@@ -774,6 +797,7 @@ async function renderKeywords(main) {
         method: "PUT",
         body: JSON.stringify(_parseKeywordsForm(e.target, FORBIDDEN_WORD_LABELS)),
       });
+      invalidateCache("/settings");
       resultEl.innerHTML = `<span class="success-text">저장되었습니다.</span>`;
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
@@ -782,7 +806,7 @@ async function renderKeywords(main) {
 }
 
 async function renderApiParams(main) {
-  const settings = await api("/settings");
+  const settings = await cachedApi("/settings");
   main.innerHTML = `<h1>챗봇 운영지침</h1>` + cardWithDetail(
     "남용 방지 설정", "",
     "챗봇 위젯으로 들어오는 질문의 글자수 제한과, 같은 사용자(세션) 기준으로 분당 몇 번까지 질문할 수 있는지를 조정합니다. " +
@@ -814,6 +838,7 @@ async function renderApiParams(main) {
           rate_limit_per_minute: parseInt(f.rate_limit_per_minute.value, 10),
         }),
       });
+      invalidateCache("/settings");
       resultEl.innerHTML = `<span class="success-text">저장되었습니다.</span>`;
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;

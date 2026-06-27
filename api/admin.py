@@ -34,6 +34,33 @@ app = FastAPI()
 
 _static_config: Optional[dict] = None
 
+# 어드민 대시보드 전용 커넥션 캐시 — 메뉴 전환 시마다 새 연결을 맺는 100~200ms 오버헤드를 줄입니다.
+# store 함수와 달리 어드민 라우터 안에서만 쓰이므로 테스트 픽스처(pg_conn)와 간섭하지 않습니다.
+_admin_conn = None
+
+
+def _get_admin_db():
+    import os
+    import psycopg2
+    import psycopg2.extras
+    global _admin_conn
+    if _admin_conn is not None and not _admin_conn.closed:
+        try:
+            with _admin_conn.cursor() as cur:
+                cur.execute("SELECT 1")
+            _admin_conn.rollback()
+            return _admin_conn
+        except Exception:
+            try:
+                _admin_conn.close()
+            except Exception:
+                pass
+            _admin_conn = None
+    dsn = os.environ.get("SUPABASE_DB_URL")
+    _admin_conn = psycopg2.connect(dsn, cursor_factory=psycopg2.extras.RealDictCursor)
+    return _admin_conn
+
+
 _INCOMPLETE_CAUSES = ["검색실패", "질문모호성"]
 _UNRESOLVED_CAUSES = ["지식DB공백", "정책밖요청"]
 _MANUAL_SYNC_KEY = "_manual_sync_all"
@@ -151,7 +178,10 @@ def daily_counts(limit: int = 30, offset: int = 0, start_date: Optional[str] = N
     start_date, end_date = _validate_date_range(
         start_date, end_date, _DATE_RANGE_MAX_MONTHS["daily-counts"], "일별 질의/응답 건수",
     )
-    return {"daily_counts": get_daily_qa_counts(limit, offset, start_date, end_date)}
+    conn = _get_admin_db()
+    result = get_daily_qa_counts(limit, offset, start_date, end_date, conn=conn)
+    conn.rollback()
+    return {"daily_counts": result}
 
 
 @app.get("/monitoring/qa-logs")
@@ -165,7 +195,10 @@ def qa_logs(limit: int = 50, offset: int = 0, start_date: Optional[str] = None,
     start_date, end_date = _validate_date_range(
         start_date, end_date, _DATE_RANGE_MAX_MONTHS["qa-logs"], "질의-답변 연계조회",
     )
-    return {"logs": get_qa_logs_paginated(limit, offset, start_date, end_date)}
+    conn = _get_admin_db()
+    result = get_qa_logs_paginated(limit, offset, start_date, end_date, conn=conn)
+    conn.rollback()
+    return {"logs": result}
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -180,7 +213,10 @@ def incomplete_answers(limit: int = 50, offset: int = 0, start_date: Optional[st
     start_date, end_date = _validate_date_range(
         start_date, end_date, _DATE_RANGE_MAX_MONTHS["incomplete"], "불완전 답변조회",
     )
-    return {"logs": get_logs_by_failure_causes(_INCOMPLETE_CAUSES, limit, offset, start_date, end_date)}
+    conn = _get_admin_db()
+    result = get_logs_by_failure_causes(_INCOMPLETE_CAUSES, limit, offset, start_date, end_date, conn=conn)
+    conn.rollback()
+    return {"logs": result}
 
 
 @app.get("/actions/unresolved")
@@ -191,7 +227,10 @@ def unresolved_answers(limit: int = 50, offset: int = 0, start_date: Optional[st
     start_date, end_date = _validate_date_range(
         start_date, end_date, _DATE_RANGE_MAX_MONTHS["unresolved"], "미해결 답변조회",
     )
-    return {"logs": get_logs_by_failure_causes(_UNRESOLVED_CAUSES, limit, offset, start_date, end_date)}
+    conn = _get_admin_db()
+    result = get_logs_by_failure_causes(_UNRESOLVED_CAUSES, limit, offset, start_date, end_date, conn=conn)
+    conn.rollback()
+    return {"logs": result}
 
 
 @app.delete("/actions/{log_id}")
@@ -215,7 +254,9 @@ def failure_report(start_date: Optional[str] = None, end_date: Optional[str] = N
     start_date, end_date = _validate_date_range(
         start_date, end_date, _DATE_RANGE_MAX_MONTHS["failure-report"], "원인별 집계 리포트",
     )
-    counts = get_failure_cause_counts(start_date, end_date)
+    conn = _get_admin_db()
+    counts = get_failure_cause_counts(start_date, end_date, conn=conn)
+    conn.rollback()
     full = {cause: counts.get(cause, 0)
             for cause in ["지식DB공백", "검색실패", "질문모호성", "정책밖요청", "API오류"]}
     return {"counts": full}
@@ -228,7 +269,10 @@ def failure_report(start_date: Optional[str] = None, end_date: Optional[str] = N
 @app.get("/settings")
 def get_all_settings(operator_email: str = Depends(get_current_operator)):
     from storage.settings_store import get_settings
-    return get_settings()
+    conn = _get_admin_db()
+    result = get_settings(conn=conn)
+    conn.rollback()
+    return result
 
 
 class OperationTeamUpdate(BaseModel):
@@ -243,7 +287,10 @@ class OperationTeamUpdate(BaseModel):
 def update_operation_team(req: OperationTeamUpdate,
                            operator_email: str = Depends(get_current_operator)):
     from storage.settings_store import update_settings
-    return update_settings({"operation_team": req.model_dump()})
+    conn = _get_admin_db()
+    result = update_settings({"operation_team": req.model_dump()}, conn=conn)
+    conn.rollback()
+    return result
 
 
 class ToneUpdate(BaseModel):
@@ -260,7 +307,10 @@ class ToneUpdate(BaseModel):
 @app.put("/settings/tone")
 def update_tone(req: ToneUpdate, operator_email: str = Depends(get_current_operator)):
     from storage.settings_store import update_settings
-    return update_settings({"tone_elements": req.model_dump()})
+    conn = _get_admin_db()
+    result = update_settings({"tone_elements": req.model_dump()}, conn=conn)
+    conn.rollback()
+    return result
 
 
 def _clean_keyword_categories(raw: Dict[str, List[str]]) -> Dict[str, List[str]]:
@@ -287,7 +337,10 @@ class SituationKeywordsUpdate(BaseModel):
 def update_situation_keywords(req: SituationKeywordsUpdate,
                                operator_email: str = Depends(get_current_operator)):
     from storage.settings_store import update_settings
-    return update_settings({"situation_keywords": _clean_keyword_categories(req.model_dump())})
+    conn = _get_admin_db()
+    result = update_settings({"situation_keywords": _clean_keyword_categories(req.model_dump())}, conn=conn)
+    conn.rollback()
+    return result
 
 
 class ForbiddenWordsUpdate(BaseModel):
@@ -300,7 +353,10 @@ class ForbiddenWordsUpdate(BaseModel):
 def update_forbidden_words(req: ForbiddenWordsUpdate,
                             operator_email: str = Depends(get_current_operator)):
     from storage.settings_store import update_settings
-    return update_settings({"forbidden_words": _clean_keyword_categories(req.model_dump())})
+    conn = _get_admin_db()
+    result = update_settings({"forbidden_words": _clean_keyword_categories(req.model_dump())}, conn=conn)
+    conn.rollback()
+    return result
 
 
 class ApiParamsUpdate(BaseModel):
@@ -315,10 +371,13 @@ def update_api_params(req: ApiParamsUpdate, operator_email: str = Depends(get_cu
     if not (1 <= req.rate_limit_per_minute <= 100):
         raise HTTPException(status_code=400, detail="rate_limit_per_minute는 1~100 사이여야 합니다.")
     from storage.settings_store import update_settings
-    return update_settings({
+    conn = _get_admin_db()
+    result = update_settings({
         "max_question_length": req.max_question_length,
         "rate_limit_per_minute": req.rate_limit_per_minute,
-    })
+    }, conn=conn)
+    conn.rollback()
+    return result
 
 
 # ── Knowledge Base 조회/관리 ─────────────────────────────────────────
@@ -326,44 +385,39 @@ def update_api_params(req: ApiParamsUpdate, operator_email: str = Depends(get_cu
 @app.get("/kb/documents")
 def list_documents(operator_email: str = Depends(get_current_operator)):
     from storage.supabase_store import get_all
-    docs = get_all()
+    conn = _get_admin_db()
+    docs = get_all(conn=conn)
+    conn.rollback()
     return {"documents": [d.to_dict() for d in docs]}
 
 
 @app.delete("/kb/documents/{doc_id}")
 def delete_document(doc_id: str, operator_email: str = Depends(get_current_operator)):
-    from storage.supabase_store import get_connection
-
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT is_editable FROM documents WHERE doc_id = %s", (doc_id,))
-            row = cur.fetchone()
-            if row is None:
-                raise HTTPException(status_code=404, detail="존재하지 않는 문서입니다.")
-            if not row["is_editable"]:
-                raise HTTPException(status_code=403, detail="노션 소스 문서는 대시보드에서 삭제할 수 없습니다.")
-            cur.execute("DELETE FROM documents WHERE doc_id = %s", (doc_id,))
-        conn.commit()
-    finally:
-        conn.close()
+    conn = _get_admin_db()
+    with conn.cursor() as cur:
+        cur.execute("SELECT is_editable FROM documents WHERE doc_id = %s", (doc_id,))
+        row = cur.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="존재하지 않는 문서입니다.")
+        if not row["is_editable"]:
+            raise HTTPException(status_code=403, detail="노션 소스 문서는 대시보드에서 삭제할 수 없습니다.")
+        cur.execute("DELETE FROM documents WHERE doc_id = %s", (doc_id,))
+    conn.commit()
     return {"status": "ok"}
 
 
 @app.post("/kb/documents/{doc_id}/embed")
 def embed_document(doc_id: str, operator_email: str = Depends(get_current_operator)):
-    from storage.supabase_store import get_connection, update_embedding
+    from storage.supabase_store import update_embedding
     from embedding_manager import get_embedding_provider
 
-    conn = get_connection()
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT title, content, is_editable FROM documents WHERE doc_id = %s", (doc_id,)
-            )
-            row = cur.fetchone()
-    finally:
-        conn.close()
+    conn = _get_admin_db()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT title, content, is_editable FROM documents WHERE doc_id = %s", (doc_id,)
+        )
+        row = cur.fetchone()
+    conn.rollback()
 
     if row is None:
         raise HTTPException(status_code=404, detail="존재하지 않는 문서입니다.")
@@ -382,7 +436,7 @@ def embed_document(doc_id: str, operator_email: str = Depends(get_current_operat
         logger.exception("문서 임베딩 생성 중 오류")
         raise HTTPException(status_code=502, detail=f"지식베이스 반영에 실패했습니다: {e}")
 
-    update_embedding(doc_id, embedding, model)
+    update_embedding(doc_id, embedding, model, conn=conn)
     return {"status": "ok"}
 
 
@@ -401,23 +455,20 @@ def embed_all_documents(operator_email: str = Depends(get_current_operator)):
 
     배치 분할 + Voyage rate limit 재시도/백오프는 embedding_manager.backfill_embeddings에
     이미 구현되어 있으므로 그대로 재사용합니다(중복 구현 방지)."""
-    from storage.supabase_store import get_connection, get_documents_missing_embedding
+    from storage.supabase_store import get_documents_missing_embedding
     from embedding_manager import get_embedding_provider, backfill_embeddings
 
     config = _load_static_config()
     model = config.get("embedding_model")
 
-    conn = get_connection()
-    try:
-        docs = get_documents_missing_embedding(model, conn=conn)
-        if not docs:
-            return {"status": "ok", "embedded": 0, "failed": 0}
+    conn = _get_admin_db()
+    docs = get_documents_missing_embedding(model, conn=conn)
+    if not docs:
+        conn.rollback()
+        return {"status": "ok", "embedded": 0, "failed": 0}
 
-        provider = get_embedding_provider(config)
-        embedded, failed = backfill_embeddings(docs, provider, model, conn=conn)
-    finally:
-        conn.close()
-
+    provider = get_embedding_provider(config)
+    embedded, failed = backfill_embeddings(docs, provider, model, conn=conn)
     return {"status": "ok", "embedded": embedded, "failed": failed}
 
 

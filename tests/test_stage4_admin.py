@@ -775,7 +775,8 @@ class TestAdminApi:
                 headers=self.auth_header(operator),
             )
         assert res.status_code == 200
-        fake_store.assert_called_once_with("2026-01-01", "2026-06-21")
+        from unittest.mock import ANY
+        fake_store.assert_called_once_with("2026-01-01", "2026-06-21", conn=ANY)
 
     @pytest.mark.parametrize("endpoint,max_months", [
         ("/monitoring/daily-counts", 3),
@@ -1095,7 +1096,6 @@ class TestAdminApi:
             res = client.get("/kb/notion/last-sync", headers=self.auth_header(operator))
         assert res.status_code == 200
         assert res.json()["last_synced_at"] is None
-        mock_conn.close.assert_called_once()
 
     def test_notion_last_sync_after_manual_refresh(self, client, operator, pg_conn):
         fake_result = {"status": "ok", "total_collected": 0, "inserted": 0, "pages": {}, "validation": {}}
