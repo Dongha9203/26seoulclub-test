@@ -75,6 +75,46 @@ button:disabled { cursor: default; opacity: 0.6; }
   color: var(--color-text);
 }
 
+/* ── 크론 동기화 상태 배너 ──────────────────────────────────────── */
+
+#cron-status-banner {
+  margin: 0 4px 12px;
+  padding: 9px 12px;
+  border-radius: var(--radius-sm);
+  font-size: var(--text-sm);
+  line-height: 1.4;
+  display: none;
+}
+#cron-status-banner.status-ok {
+  display: block;
+  background: var(--color-success-bg);
+  color: var(--color-success);
+}
+#cron-status-banner.status-warn {
+  display: block;
+  background: var(--color-warning-bg);
+  color: var(--color-warning);
+}
+#cron-status-banner.status-error {
+  display: block;
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+}
+#cron-status-banner .cron-label {
+  font-weight: 700;
+  display: block;
+}
+#cron-status-banner .cron-time {
+  display: block;
+  font-size: 0.75rem;
+  margin-top: 2px;
+  opacity: 0.85;
+}
+
+@media (max-width: 720px) {
+  #cron-status-banner { display: none !important; }
+}
+
 .nav-group { margin-bottom: 14px; }
 
 .nav-group-label {

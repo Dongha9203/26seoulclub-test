@@ -80,6 +80,54 @@ function invalidateCache(prefix) {
   Object.keys(_apiCache).forEach((k) => { if (k.startsWith(prefix)) delete _apiCache[k]; });
 }
 
+// ── 크론 동기화 상태 배너 ──────────────────────────────────────
+
+function _isKstToday(utcIsoString) {
+  const d = new Date(utcIsoString);
+  const kst = d.toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" });
+  const now = new Date().toLocaleDateString("ko-KR", { timeZone: "Asia/Seoul" });
+  return kst === now;
+}
+
+async function renderCronStatus() {
+  const el = document.getElementById("cron-status-banner");
+  if (!el) return;
+  try {
+    const d = await api("/cron/status");
+    let cls, icon, label, timeText = "";
+    if (!d.status) {
+      cls = "status-warn"; icon = "⚠️"; label = "동기화 기록 없음";
+    } else if (d.status !== "ok") {
+      cls = "status-error"; icon = "❌"; label = "노션 동기화 오류";
+      if (d.started_at) {
+        timeText = "최근: " + new Date(d.started_at).toLocaleString("ko-KR", {
+          timeZone: "Asia/Seoul", month: "numeric", day: "numeric",
+          hour: "2-digit", minute: "2-digit",
+        });
+      }
+    } else if (_isKstToday(d.started_at)) {
+      cls = "status-ok"; icon = "🟢"; label = "노션 동기화 정상";
+      timeText = "오늘 " + new Date(d.started_at).toLocaleString("ko-KR", {
+        timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit",
+      }) + " 완료";
+    } else {
+      cls = "status-warn"; icon = "⚠️"; label = "오늘 동기화 미실행";
+      timeText = "최근: " + new Date(d.started_at).toLocaleString("ko-KR", {
+        timeZone: "Asia/Seoul", month: "numeric", day: "numeric",
+        hour: "2-digit", minute: "2-digit",
+      });
+    }
+    el.className = cls;
+    el.innerHTML =
+      `<span class="cron-label">${icon} ${label}</span>` +
+      (timeText ? `<span class="cron-time">${timeText}</span>` : "");
+  } catch {
+    /* 배너 오류는 조용히 무시 */
+  }
+}
+
+renderCronStatus();
+
 // ── 공용 헬퍼 ──────────────────────────────────────────────────
 
 function escapeHtml(s) {

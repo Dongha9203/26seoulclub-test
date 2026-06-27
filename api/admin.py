@@ -616,6 +616,28 @@ def notion_faq_url(operator_email: str = Depends(get_current_operator)):
     return {"url": url if url and "{{" not in url else None}
 
 
+@app.get("/cron/status")
+def get_cron_status(operator_email: str = Depends(get_current_operator)):
+    conn = _get_admin_db()
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT started_at, finished_at, status, result, error_message "
+            "FROM cron_run_log ORDER BY started_at DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+    conn.rollback()
+    if row is None:
+        return {"status": None, "started_at": None, "finished_at": None,
+                "result": None, "error_message": None}
+    return {
+        "status": row["status"],
+        "started_at": row["started_at"].isoformat() if row["started_at"] else None,
+        "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
+        "result": row["result"],
+        "error_message": row["error_message"],
+    }
+
+
 @app.get("/kb/manual-source-guide")
 def manual_source_guide(operator_email: str = Depends(get_current_operator)):
     return {
