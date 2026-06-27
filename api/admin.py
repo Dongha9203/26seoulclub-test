@@ -549,18 +549,44 @@ def upload_google_sheet(req: GoogleSheetUpload, operator_email: str = Depends(ge
 
 @app.post("/kb/notion/refresh")
 def refresh_notion(operator_email: str = Depends(get_current_operator)):
+    import uuid as _uuid
     from api.sync_notion import _perform_sync
-    from storage.supabase_store import upsert_sync_metadata
+    from storage.supabase_store import upsert_sync_metadata, get_connection, insert_cron_run_log, update_cron_run_log
+
+    run_id = str(_uuid.uuid4())
+    log_conn = get_connection()
+    try:
+        insert_cron_run_log(run_id, "sync_notion_manual", conn=log_conn)
+    except Exception:
+        logger.exception("cron_run_log 시작 기록 실패 (무시)")
 
     try:
         result = _perform_sync()
     except (ConnectionError, TimeoutError) as e:
         logger.exception("노션 즉시 갱신 중 네트워크 오류")
+        try:
+            update_cron_run_log(run_id, "error", error_message=str(e), conn=log_conn)
+        except Exception:
+            logger.exception("cron_run_log 오류 기록 실패 (무시)")
+        finally:
+            log_conn.close()
         raise HTTPException(status_code=502, detail=f"노션 갱신에 실패했습니다: {e}")
     except EnvironmentError as e:
+        try:
+            update_cron_run_log(run_id, "error", error_message=str(e), conn=log_conn)
+        except Exception:
+            logger.exception("cron_run_log 오류 기록 실패 (무시)")
+        finally:
+            log_conn.close()
         raise HTTPException(status_code=503, detail=f"노션 연동 설정 오류: {e}")
     except Exception as e:
         logger.exception("노션 즉시 갱신 중 오류")
+        try:
+            update_cron_run_log(run_id, "error", error_message=str(e), conn=log_conn)
+        except Exception:
+            logger.exception("cron_run_log 오류 기록 실패 (무시)")
+        finally:
+            log_conn.close()
         raise HTTPException(status_code=502, detail=f"노션 갱신에 실패했습니다: {e}")
 
     now = datetime.now(timezone.utc).isoformat()
@@ -585,6 +611,14 @@ def refresh_notion(operator_email: str = Depends(get_current_operator)):
         summary_text += f" (임베딩 실패 {embedding['failed']}건, 잠시 후 다시 시도해주세요)"
     result["summary_text"] = summary_text
     result["last_synced_at"] = now
+
+    try:
+        update_cron_run_log(run_id, "ok", result=result, conn=log_conn)
+    except Exception:
+        logger.exception("cron_run_log 완료 기록 실패 (무시)")
+    finally:
+        log_conn.close()
+
     return result
 
 
@@ -621,16 +655,17 @@ def get_cron_status(operator_email: str = Depends(get_current_operator)):
     conn = _get_admin_db()
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT started_at, finished_at, status, result, error_message "
-            "FROM cron_run_log ORDER BY started_at DESC LIMIT 1"
+            "SELECT job_name, started_at, finished_at, status, result, error_message "
+            "FROM cron_run_log WHERE job_name LIKE 'sync_notion%' ORDER BY started_at DESC LIMIT 1"
         )
         row = cur.fetchone()
     conn.rollback()
     if row is None:
-        return {"status": None, "started_at": None, "finished_at": None,
+        return {"status": None, "job_name": None, "started_at": None, "finished_at": None,
                 "result": None, "error_message": None}
     return {
         "status": row["status"],
+        "job_name": row["job_name"],
         "started_at": row["started_at"].isoformat() if row["started_at"] else None,
         "finished_at": row["finished_at"].isoformat() if row["finished_at"] else None,
         "result": row["result"],

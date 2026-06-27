@@ -90,6 +90,7 @@ function _isKstToday(utcIsoString) {
 }
 
 function _showCronModal(data, cls) {
+  const trigger = data.job_name === "sync_notion_manual" ? "수동 갱신" : "자동 크론";
   let title, bodyHtml;
   const guideHtml = `
     <hr style="border:none;border-top:1px solid var(--color-border);margin:12px 0">
@@ -105,7 +106,7 @@ function _showCronModal(data, cls) {
       hour: "2-digit", minute: "2-digit",
     });
     title = "노션 동기화 상태 안내";
-    bodyHtml = `<p>🟢 오늘 ${t} 동기화가 정상 완료되었습니다.</p>
+    bodyHtml = `<p>🟢 오늘 ${t} 동기화가 정상 완료되었습니다. (${trigger})</p>
       <p>별도 조치가 필요 없습니다.</p>${guideHtml}`;
   } else if (cls === "status-warn" && !data.status) {
     title = "동기화 기록 없음 안내";
@@ -119,7 +120,7 @@ function _showCronModal(data, cls) {
       hour: "2-digit", minute: "2-digit",
     });
     title = "동기화 미실행 안내";
-    bodyHtml = `<p>최근 실행: ${t}</p>
+    bodyHtml = `<p>최근 실행: ${t} (${trigger})</p>
       <p>자동 동기화가 오늘 실행되지 않았습니다.</p>
       <p><strong>조치:</strong> Knowledge Base 메뉴 →<br>
       <strong>'지금 갱신'</strong> 버튼을 눌러주세요.</p>${guideHtml}`;
@@ -129,7 +130,7 @@ function _showCronModal(data, cls) {
       hour: "2-digit", minute: "2-digit",
     }) : "-";
     title = "동기화 오류 안내";
-    bodyHtml = `<p>최근 실행: ${t}</p>
+    bodyHtml = `<p>최근 실행: ${t} (${trigger})</p>
       ${data.error_message ? `<p>오류 내용:<br><code>${escapeHtml(data.error_message)}</code></p>` : ""}
       <p><strong>조치:</strong> Knowledge Base 메뉴 → <strong>'지금 갱신'</strong>으로
       재시도하거나, 오류가 반복되면 서버 로그를 확인해주세요.</p>${guideHtml}`;
@@ -155,6 +156,7 @@ async function renderCronStatus() {
   if (!el) return;
   try {
     const d = await api("/cron/status");
+    const trigger = d.job_name === "sync_notion_manual" ? "수동" : "자동";
     let cls, icon, label, timeText = "";
     if (!d.status) {
       cls = "status-warn"; icon = "⚠️"; label = "동기화 기록 없음";
@@ -164,19 +166,19 @@ async function renderCronStatus() {
         timeText = "최근: " + new Date(d.started_at).toLocaleString("ko-KR", {
           timeZone: "Asia/Seoul", month: "numeric", day: "numeric",
           hour: "2-digit", minute: "2-digit",
-        });
+        }) + ` (${trigger})`;
       }
     } else if (_isKstToday(d.started_at)) {
       cls = "status-ok"; icon = "🟢"; label = "노션 동기화 정상";
       timeText = "오늘 " + new Date(d.started_at).toLocaleString("ko-KR", {
         timeZone: "Asia/Seoul", hour: "2-digit", minute: "2-digit",
-      }) + " 완료";
+      }) + ` 완료 (${trigger})`;
     } else {
       cls = "status-warn"; icon = "⚠️"; label = "오늘 동기화 미실행";
       timeText = "최근: " + new Date(d.started_at).toLocaleString("ko-KR", {
         timeZone: "Asia/Seoul", month: "numeric", day: "numeric",
         hour: "2-digit", minute: "2-digit",
-      });
+      }) + ` (${trigger})`;
     }
     el.className = cls;
     el.innerHTML =
