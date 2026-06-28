@@ -626,7 +626,7 @@ async function renderKb(main) {
         <div>
           <label>파일 업로드 (.docx/.pdf/.xlsx)</label>
           <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
-            <label for="kb-file-input" class="btn btn-secondary" style="margin:0; cursor:pointer; line-height:normal;">파일 선택</label>
+            <label for="kb-file-input" class="btn btn-secondary" style="margin:0; cursor:pointer; line-height:normal; padding:7px 16px;">파일 선택</label>
             <span id="kb-file-name" style="font-size:var(--text-sm); color:var(--color-text-muted);">선택된 파일 없음</span>
           </div>
           <input type="file" id="kb-file-input" accept=".docx,.pdf,.xlsx" style="display:none;">
