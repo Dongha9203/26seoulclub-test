@@ -310,6 +310,7 @@ th { color: var(--color-text-muted); font-weight: 600; white-space: nowrap; }
 /* ── 폼 ─────────────────────────────────────────────────────── */
 
 label { display: block; font-size: var(--text-sm); color: var(--color-text-muted); margin: 10px 0 4px; }
+input[type="file"] { cursor: pointer; }
 input, select, textarea {
   width: 100%;
   padding: 8px 10px;
