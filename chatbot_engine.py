@@ -23,6 +23,7 @@
 
 import json
 import logging
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -160,7 +161,16 @@ class ChatbotEngine:
     # 로깅
     # ------------------------------------------------------------------
     def _write_log(self, entry: Dict) -> None:
-        insert_qa_log(entry, self._conn)
+        def _target():
+            try:
+                insert_qa_log(entry)
+            except Exception:
+                logger.exception("비동기 로그 기록 실패 (session_id=%s)", entry.get("session_id"))
+
+        # conn=None으로 호출해 스레드 전용 커넥션 사용 (psycopg2 커넥션은 스레드 비안전)
+        t = threading.Thread(target=_target, daemon=True)
+        t.start()
+        self._last_log_thread = t
 
     # ------------------------------------------------------------------
     # 메인 엔트리포인트

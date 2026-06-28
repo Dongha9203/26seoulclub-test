@@ -7,11 +7,16 @@ API 운영 파라미터)은 이 테이블(app_settings, 단일 행)에서 관리
 Vercel 서버리스는 파일시스템이 읽기 전용이라 config.json에 저장하면 반영되지 않습니다.
 """
 
-from typing import Dict
+import time
+from typing import Dict, Optional
 
 import psycopg2.extras
 
 from storage.supabase_store import get_connection, _with_conn
+
+_settings_cache: Optional[Dict] = None
+_settings_cache_time: float = 0.0
+_SETTINGS_CACHE_TTL = 30.0
 
 _CREATE_APP_SETTINGS_SQL = """
 CREATE TABLE IF NOT EXISTS app_settings (
@@ -103,6 +108,10 @@ def seed_default_settings(defaults: Dict, conn=None) -> None:
 
 
 def get_settings(conn=None) -> Dict:
+    global _settings_cache, _settings_cache_time
+    if conn is None and _settings_cache is not None and time.time() - _settings_cache_time < _SETTINGS_CACHE_TTL:
+        return _settings_cache
+
     c, owns_conn = _with_conn(conn)
     try:
         with c.cursor() as cur:
@@ -113,7 +122,7 @@ def get_settings(conn=None) -> Dict:
             c.close()
     if row is None:
         raise RuntimeError("app_settings에 설정 행이 없습니다 (seed_default_settings 먼저 실행 필요).")
-    return {
+    result = {
         "operation_team": row["operation_team"],
         "similarity_threshold": row["similarity_threshold"],
         "search_weights": row["search_weights"],
@@ -127,6 +136,10 @@ def get_settings(conn=None) -> Dict:
         "forbidden_words": row["forbidden_words"],
         "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
     }
+    if conn is None:
+        _settings_cache = result
+        _settings_cache_time = time.time()
+    return result
 
 
 def update_settings(partial: Dict, conn=None) -> Dict:
@@ -178,4 +191,7 @@ def update_settings(partial: Dict, conn=None) -> Dict:
     finally:
         if owns_conn:
             c.close()
+    global _settings_cache, _settings_cache_time
+    _settings_cache = None
+    _settings_cache_time = 0.0
     return get_settings(conn)

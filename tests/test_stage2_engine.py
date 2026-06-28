@@ -1076,6 +1076,7 @@ class TestChatbotEngine:
         assert response.escalated_to_operation_team is True
         assert "02-0000-0000" in response.answer
 
+        engine._last_log_thread.join(timeout=5)
         with pg_conn.cursor() as cur:
             cur.execute("SELECT failure_cause FROM qa_log WHERE session_id = %s", ("session-api-fail",))
             row = cur.fetchone()
@@ -1336,6 +1337,7 @@ class TestChatbotEngine:
         engine._search_engine.is_confident.return_value = False
 
         engine.handle_question("오늘 날씨 어때요?", "session-4")
+        engine._last_log_thread.join(timeout=5)
 
         with pg_conn.cursor() as cur:
             cur.execute("SELECT * FROM qa_log WHERE session_id = %s", ("session-4",))
@@ -1350,6 +1352,7 @@ class TestChatbotEngine:
         engine._search_engine.is_confident.return_value = False
 
         engine.handle_question("수당 지급 기준이 뭐예요?", "session-5")
+        engine._last_log_thread.join(timeout=5)
         response2 = engine.handle_question("수당 지급 기준 알려주세요", "session-5")
 
         assert response2.repeated_count >= 1
@@ -1374,6 +1377,169 @@ class TestChatbotEngine:
 
     def test_count_repeated_empty_keywords_returns_zero(self, engine):
         assert engine._count_repeated("session-x", []) == 0
+
+
+# ══════════════════════════════════════════════════════════════
+# _write_log() 비동기화 — 상세 예외/경쟁조건 테스트
+# ══════════════════════════════════════════════════════════════
+
+class TestWriteLogAsync:
+    """_write_log()가 daemon 스레드로 동작할 때의 예외 처리·경쟁 조건·완결성 검증."""
+
+    @pytest.fixture
+    def _config(self):
+        return {
+            "embedding_model": "voyage-4",
+            "llm_model": "claude-sonnet-4-6",
+            "similarity_threshold": 0.55,
+            "search_weights": {"vector": 0.6, "bm25": 0.4},
+            "search_top_k": 5,
+            "repeat_threshold": 2,
+            "min_keywords_for_clarity": 1,
+            "max_question_length": 300,
+            "operation_team": {
+                "name": "운영팀", "phone": "02-0000-0000",
+                "email_list": ["ops@test.com"], "operating_hours": "평일 9-18시",
+            },
+        }
+
+    @pytest.fixture
+    def engine(self, _config, pg_conn):
+        from chatbot_engine import ChatbotEngine
+        return ChatbotEngine(
+            _config, conn=pg_conn,
+            search_engine=MagicMock(), anthropic_client=MagicMock(),
+        )
+
+    # ── 스레드 속성 ──────────────────────────────────────────────
+
+    def test_log_thread_is_daemon(self, engine):
+        """daemon=True여야 프로세스 종료 시 로그 스레드가 메인 스레드를 붙잡지 않는다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+        engine.handle_question("오늘 날씨 어때요?", "async-daemon-1")
+        assert engine._last_log_thread.daemon is True
+
+    def test_log_thread_completes_within_timeout(self, engine):
+        """정상 DB 환경에서 로그 스레드는 5초 안에 끝나야 한다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+        engine.handle_question("오늘 날씨 어때요?", "async-timeout-1")
+        engine._last_log_thread.join(timeout=5)
+        assert not engine._last_log_thread.is_alive(), "로그 스레드가 5초 이내에 종료되지 않음"
+
+    # ── 예외 격리 ────────────────────────────────────────────────
+
+    def test_db_error_in_thread_does_not_raise_to_caller(self, engine):
+        """DB INSERT가 스레드 안에서 실패해도 handle_question()은 정상 응답을 반환해야 한다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+
+        with patch("chatbot_engine.insert_qa_log", side_effect=RuntimeError("DB 연결 끊김")):
+            response = engine.handle_question("날씨 어때요?", "async-dberr-1")
+
+        engine._last_log_thread.join(timeout=5)
+        # 응답 자체는 정상이어야 한다
+        assert response.escalated_to_operation_team is True
+
+    def test_db_error_in_thread_is_logged_via_logger_exception(self, engine):
+        """스레드 내 예외는 조용히 삼켜지지 않고 logger.exception으로 기록되어야 한다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+
+        with patch("chatbot_engine.insert_qa_log", side_effect=OSError("네트워크 오류")), \
+             patch("chatbot_engine.logger") as mock_logger:
+            engine.handle_question("날씨?", "async-logerr-1")
+            engine._last_log_thread.join(timeout=5)
+
+        mock_logger.exception.assert_called_once()
+        call_args = mock_logger.exception.call_args[0]
+        assert "async-logerr-1" in call_args[1]
+
+    def test_db_error_does_not_prevent_subsequent_log(self, engine, pg_conn):
+        """첫 번째 로그가 DB 오류로 실패해도 두 번째 로그는 정상 기록되어야 한다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+
+        with patch("chatbot_engine.insert_qa_log", side_effect=RuntimeError("임시 오류")):
+            engine.handle_question("첫번째 질문", "async-recovery-1")
+            engine._last_log_thread.join(timeout=5)
+
+        # 두 번째는 패치 없이 — 실제 DB에 정상 기록되어야 한다
+        engine.handle_question("두번째 질문", "async-recovery-1")
+        engine._last_log_thread.join(timeout=5)
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM qa_log WHERE session_id = %s",
+                        ("async-recovery-1",))
+            assert cur.fetchone()["cnt"] == 1  # 첫 번째는 실패, 두 번째만 기록
+
+    # ── _last_log_thread 설정 경로 ───────────────────────────────
+
+    def test_last_log_thread_set_on_filter_block_path(self, engine):
+        """욕설 필터 차단 경로에서도 _last_log_thread가 설정되어야 한다."""
+        engine.handle_question("야 이 씨발 진짜", "async-filter-1")
+        assert hasattr(engine, "_last_log_thread")
+        assert engine._last_log_thread is not None
+
+    def test_last_log_thread_set_on_search_empty_path(self, engine):
+        """검색 결과 없음(정책밖 폴백) 경로에서도 _last_log_thread가 설정되어야 한다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+        engine.handle_question("오늘 날씨 어때요?", "async-empty-1")
+        assert hasattr(engine, "_last_log_thread")
+        assert engine._last_log_thread is not None
+
+    def test_last_log_thread_updated_on_second_call(self, engine):
+        """두 번째 handle_question 호출 후 _last_log_thread가 새 스레드로 교체되어야 한다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+        engine.handle_question("첫번째", "async-seq-1")
+        first_thread = engine._last_log_thread
+        engine.handle_question("두번째", "async-seq-1")
+        assert engine._last_log_thread is not first_thread
+
+    # ── 동시 로그 기록 ───────────────────────────────────────────
+
+    def test_two_sequential_calls_both_logged(self, engine, pg_conn):
+        """연속 두 번의 handle_question이 서로 다른 session_id로 모두 DB에 기록되어야 한다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+
+        engine.handle_question("첫 질문", "async-seq2-A")
+        t1 = engine._last_log_thread
+        engine.handle_question("두 번째 질문", "async-seq2-B")
+        t2 = engine._last_log_thread
+
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        with pg_conn.cursor() as cur:
+            cur.execute(
+                "SELECT session_id FROM qa_log WHERE session_id IN %s",
+                (("async-seq2-A", "async-seq2-B"),),
+            )
+            found = {r["session_id"] for r in cur.fetchall()}
+        assert found == {"async-seq2-A", "async-seq2-B"}
+
+    def test_log_entry_has_correct_fields_after_thread_join(self, engine, pg_conn):
+        """스레드가 완료된 뒤 DB에 삽입된 행의 주요 필드가 올바른지 검증한다."""
+        engine._search_engine.search.return_value = []
+        engine._search_engine.is_confident.return_value = False
+
+        engine.handle_question("수당 지급 기준이 뭐예요?", "async-fields-1")
+        engine._last_log_thread.join(timeout=5)
+
+        with pg_conn.cursor() as cur:
+            cur.execute("SELECT * FROM qa_log WHERE session_id = %s", ("async-fields-1",))
+            row = cur.fetchone()
+
+        assert row is not None
+        assert row["question"] == "수당 지급 기준이 뭐예요?"
+        assert row["session_id"] == "async-fields-1"
+        assert row["failure_cause"] is not None
+        assert row["escalated_to_operation_team"] is True
+        assert row["latency_ms"] is not None and row["latency_ms"] >= 0
 
 
 # ══════════════════════════════════════════════════════════════

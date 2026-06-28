@@ -226,6 +226,222 @@ class TestSettingsStore:
 
 
 # ══════════════════════════════════════════════════════════════
+# get_settings() 캐시 TTL — 상세 테스트
+# ══════════════════════════════════════════════════════════════
+
+def _fake_row():
+    """settings_store.get_settings()가 읽을 수 있는 최소한의 가짜 DB 행을 반환한다."""
+    from storage.settings_store import TONE_KEYS
+    from datetime import datetime, timezone
+    row = {
+        "operation_team": {"name": "테스트팀", "phone": "02-9999-9999",
+                           "email_list": ["t@t.com"], "operating_hours": "평일"},
+        "similarity_threshold": 0.55,
+        "search_weights": {"vector": 0.6, "bm25": 0.4},
+        "search_top_k": 5,
+        "repeat_threshold": 2,
+        "min_keywords_for_clarity": 1,
+        "max_question_length": 300,
+        "rate_limit_per_minute": 20,
+        "situation_keywords": None,
+        "forbidden_words": None,
+        "updated_at": datetime(2024, 1, 1, tzinfo=timezone.utc),
+    }
+    for k in TONE_KEYS:
+        row[f"tone_{k}"] = f"default-{k}"
+    return row
+
+
+def _mock_conn_returning(row):
+    """fetchone()이 row를 반환하는 mock psycopg2 커넥션을 만든다."""
+    cur = MagicMock()
+    cur.fetchone.return_value = row
+    conn = MagicMock()
+    conn.cursor.return_value.__enter__.return_value = cur
+    return conn, cur
+
+
+class TestSettingsCache:
+    """get_settings() 30초 TTL 캐시 + update_settings() 무효화 검증."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_cache(self, monkeypatch):
+        """각 테스트 전후로 모듈 레벨 캐시를 초기화한다."""
+        import storage.settings_store as ss
+        monkeypatch.setattr(ss, "_settings_cache", None)
+        monkeypatch.setattr(ss, "_settings_cache_time", 0.0)
+
+    # ── 기본 캐시 동작 ───────────────────────────────────────────
+
+    def test_first_call_queries_db(self, monkeypatch):
+        """캐시가 없을 때 첫 번째 get_settings()은 반드시 DB를 조회해야 한다."""
+        import storage.settings_store as ss
+        mock_conn, mock_cur = _mock_conn_returning(_fake_row())
+        with patch("storage.settings_store._with_conn", return_value=(mock_conn, False)):
+            ss.get_settings()
+        mock_cur.execute.assert_called_once()
+
+    def test_second_call_within_ttl_hits_cache(self, monkeypatch):
+        """TTL 안에 두 번째 get_settings(conn=None) 호출은 DB를 조회하지 않아야 한다."""
+        import storage.settings_store as ss
+        mock_conn, mock_cur = _mock_conn_returning(_fake_row())
+        with patch("storage.settings_store._with_conn", return_value=(mock_conn, False)) as mock_wc:
+            ss.get_settings()   # 첫 호출 — DB 조회 + 캐시 저장
+            ss.get_settings()   # 두 번째 — 캐시 적중
+        assert mock_wc.call_count == 1, "TTL 내 두 번째 호출이 DB를 다시 조회함"
+
+    def test_second_call_returns_same_value(self, monkeypatch):
+        """캐시 적중 시 반환값이 첫 번째 호출 결과와 동일해야 한다."""
+        import storage.settings_store as ss
+        mock_conn, _ = _mock_conn_returning(_fake_row())
+        with patch("storage.settings_store._with_conn", return_value=(mock_conn, False)):
+            first = ss.get_settings()
+            second = ss.get_settings()
+        assert first == second
+
+    def test_cache_miss_after_ttl_expires(self, monkeypatch):
+        """캐시 TTL(30초)이 지난 뒤 get_settings()는 DB를 다시 조회해야 한다."""
+        import time
+        import storage.settings_store as ss
+        mock_conn, mock_cur = _mock_conn_returning(_fake_row())
+        with patch("storage.settings_store._with_conn", return_value=(mock_conn, False)) as mock_wc:
+            ss.get_settings()               # 첫 호출 — 캐시 저장
+            # 시간을 TTL(30s) 이후로 조작
+            monkeypatch.setattr(ss, "_settings_cache_time", time.time() - 31)
+            ss.get_settings()               # 만료 후 재조회
+        assert mock_wc.call_count == 2, "TTL 만료 후에도 DB를 재조회하지 않음"
+
+    # ── 캐시 무효화 ──────────────────────────────────────────────
+
+    def test_update_settings_clears_cache(self, pg_conn, monkeypatch):
+        """update_settings() 호출 직후 _settings_cache가 None으로 초기화되어야 한다."""
+        import storage.settings_store as ss
+        from storage.settings_store import get_settings, update_settings
+
+        original = get_settings(pg_conn)
+        try:
+            # conn=None 호출로 캐시를 채운다 (실제 DB + 캐시 저장)
+            ss.get_settings()
+            assert ss._settings_cache is not None
+
+            # update 후 캐시가 지워져야 한다
+            update_settings({"search_top_k": original["search_top_k"]}, pg_conn)
+            assert ss._settings_cache is None
+        finally:
+            update_settings(original, pg_conn)
+
+    def test_after_update_next_call_re_queries_db(self, pg_conn, monkeypatch):
+        """update_settings() 이후 get_settings()는 DB를 새로 읽어야 한다."""
+        import storage.settings_store as ss
+        from storage.settings_store import get_settings, update_settings
+
+        original = get_settings(pg_conn)
+        try:
+            ss.get_settings()           # 캐시 채우기
+            update_settings({"search_top_k": original["search_top_k"]}, pg_conn)
+
+            mock_conn, mock_cur = _mock_conn_returning(_fake_row())
+            with patch("storage.settings_store._with_conn",
+                       return_value=(mock_conn, False)) as mock_wc:
+                ss.get_settings()       # 캐시 무효화 후 → DB 재조회
+            assert mock_wc.call_count == 1
+        finally:
+            update_settings(original, pg_conn)
+
+    def test_empty_partial_update_does_not_invalidate_cache(self, pg_conn, monkeypatch):
+        """변경 키가 없는 update_settings({}) 호출은 캐시를 무효화하지 않아야 한다."""
+        import storage.settings_store as ss
+        from storage.settings_store import get_settings, update_settings
+
+        ss.get_settings()           # 캐시 채우기
+        cached = ss._settings_cache
+        assert cached is not None
+
+        update_settings({}, pg_conn)  # 변경 없음 — 조기 반환 경로
+
+        # 캐시가 그대로 남아 있어야 한다
+        assert ss._settings_cache is not None
+        assert ss._settings_cache == cached
+
+    # ── 명시적 conn이 있을 때 ────────────────────────────────────
+
+    def test_explicit_conn_bypasses_cache_read(self, monkeypatch):
+        """conn을 직접 넘기면 캐시가 채워져 있어도 DB를 조회해야 한다."""
+        import storage.settings_store as ss
+
+        # 캐시를 미리 채워둔다
+        monkeypatch.setattr(ss, "_settings_cache", {"similarity_threshold": 0.99})
+        monkeypatch.setattr(ss, "_settings_cache_time", __import__("time").time())
+
+        mock_conn, mock_cur = _mock_conn_returning(_fake_row())
+        ss.get_settings(conn=mock_conn)
+
+        mock_cur.execute.assert_called_once()   # 캐시를 무시하고 DB를 조회했어야 한다
+
+    def test_explicit_conn_does_not_write_to_cache(self, monkeypatch):
+        """conn을 직접 넘긴 get_settings() 호출은 캐시를 갱신하지 않아야 한다."""
+        import storage.settings_store as ss
+
+        mock_conn, _ = _mock_conn_returning(_fake_row())
+        ss.get_settings(conn=mock_conn)
+
+        assert ss._settings_cache is None, "명시적 conn 호출이 캐시를 써버림"
+
+    # ── DB 오류 시 캐시 무결성 ──────────────────────────────────
+
+    def test_db_error_does_not_corrupt_cache(self, monkeypatch):
+        """DB 조회 중 예외가 발생해도 _settings_cache는 None을 유지해야 한다."""
+        import storage.settings_store as ss
+
+        with patch("storage.settings_store._with_conn",
+                   side_effect=RuntimeError("DB 연결 실패")):
+            with pytest.raises(RuntimeError):
+                ss.get_settings()
+
+        assert ss._settings_cache is None, "DB 오류 후 캐시에 오염된 값이 남음"
+
+    def test_get_settings_with_none_row_raises_and_leaves_cache_empty(self, monkeypatch):
+        """DB에 설정 행이 없을 때 RuntimeError를 발생시키고 캐시는 비어 있어야 한다."""
+        import storage.settings_store as ss
+        mock_conn, _ = _mock_conn_returning(None)   # 행 없음
+        with patch("storage.settings_store._with_conn", return_value=(mock_conn, False)):
+            with pytest.raises(RuntimeError, match="seed_default_settings"):
+                ss.get_settings()
+        assert ss._settings_cache is None
+
+    # ── 동시성 ──────────────────────────────────────────────────
+
+    def test_concurrent_readers_all_get_same_result(self, monkeypatch):
+        """여러 스레드가 동시에 get_settings()를 호출해도 모두 동일한 값을 받아야 한다."""
+        import threading
+        import storage.settings_store as ss
+
+        mock_conn, _ = _mock_conn_returning(_fake_row())
+        results = []
+        errors = []
+
+        def _reader():
+            try:
+                with patch("storage.settings_store._with_conn",
+                           return_value=(mock_conn, False)):
+                    results.append(ss.get_settings())
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=_reader) for _ in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        assert not errors, f"스레드 중 예외 발생: {errors}"
+        assert len(results) == 10
+        # 모든 결과의 similarity_threshold가 동일해야 한다
+        thresholds = {r["similarity_threshold"] for r in results}
+        assert len(thresholds) == 1
+
+
+# ══════════════════════════════════════════════════════════════
 # storage/action_store.py
 # ══════════════════════════════════════════════════════════════
 

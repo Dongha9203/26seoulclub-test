@@ -27,7 +27,12 @@ ANSWER_TOOL = {
         "properties": {
             "answer": {
                 "type": "string",
-                "description": "사용자에게 보여줄 최종 한국어 답변 텍스트",
+                "description": (
+                    "사용자에게 보여줄 최종 한국어 답변 텍스트. "
+                    "핵심 정보만 3문장 이내로 간결하게 작성합니다. "
+                    "\"안녕하세요\", \"좋은 질문이에요\" 같은 서론과 "
+                    "\"도움이 됐으면 합니다\" 같은 마무리 인사는 생략합니다."
+                ),
             },
             "sentiment_score": {
                 "type": "number",
@@ -88,7 +93,8 @@ def build_system_prompt(tone_instruction: str, search_results: List[SearchResult
     guardrails = [
         "[가드레일]",
         "- 반드시 아래 제공된 문서 내용에만 근거해 답변하세요. 문서에 없는 내용은 추측하지 마세요.",
-        "- 답변에는 어떤 문서를 참고했는지 알 수 있도록 자연스럽게 출처를 언급하세요.",
+        "- 답변은 핵심 정보만 3문장 이내로 간결하게 작성하세요. 서론·인사·마무리 감사 표현은 생략하세요.",
+        "- 출처는 \"(동아리ON 안내 자료 기준)\" 수준의 한 줄로 간결히 언급하거나, 노션 딥링크로만 표시하세요.",
     ]
     if low_confidence:
         guardrails.append("- 제공된 문서가 질문과 완전히 일치하지 않을 수 있습니다. "
@@ -102,10 +108,8 @@ def build_system_prompt(tone_instruction: str, search_results: List[SearchResult
         )
     if has_notion_source:
         guardrails.append(
-            "- 참고한 문서 중 노션 소스가 있다면, 답변의 맨 마지막에 반드시 "
-            "\"(자세한 내용: [페이지명] 바로가기)\" 형식으로 해당 문서의 딥링크를 "
-            "마크다운 링크로 포함하세요. 이는 선택이 아니라 필수입니다. "
-            "예: (자세한 내용: [FAQ 바로가기](딥링크주소))"
+            "- 노션 소스가 있다면 핵심만 1~2문장으로 요약하고, 답변 끝에 반드시 "
+            "\"(자세한 내용: [페이지명 바로가기](딥링크주소))\" 형식의 마크다운 링크를 붙이세요."
         )
 
     parts = [
@@ -117,11 +121,11 @@ def build_system_prompt(tone_instruction: str, search_results: List[SearchResult
 
 
 def call_claude(client: anthropic.Anthropic, model: str, system_prompt: str,
-                 question: str) -> Tuple[str, float, str]:
+                 question: str, max_tokens: int = 2048) -> Tuple[str, float, str]:
     """Claude API를 1회 호출해 (answer, sentiment_score, resolution_status)를 반환합니다."""
     response = client.messages.create(
         model=model,
-        max_tokens=4096,
+        max_tokens=max_tokens,
         system=system_prompt,
         messages=[{"role": "user", "content": question}],
         tools=[ANSWER_TOOL],
@@ -168,7 +172,7 @@ def call_claude_stream(client: anthropic.Anthropic, model: str, system_prompt: s
     emitted = ""
     with client.messages.stream(
         model=model,
-        max_tokens=4096,
+        max_tokens=2048,
         system=system_prompt,
         messages=[{"role": "user", "content": question}],
         tools=[ANSWER_TOOL],
