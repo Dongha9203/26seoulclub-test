@@ -328,6 +328,7 @@ const routes = {
   "failure-report": renderFailureReport,
   "operation-team": renderOperationTeam,
   "kb": renderKb,
+  "kb-documents": renderKbDocuments,
   "tone": renderTone,
   "keywords": renderKeywords,
   "api-params": renderApiParams,
@@ -589,28 +590,15 @@ async function renderOperationTeam(main) {
 }
 
 async function renderKb(main) {
-  const [docs, lastSync, guide] = await Promise.all([
-    api("/kb/documents"), api("/kb/notion/last-sync"), cachedApi("/kb/manual-source-guide"),
+  const [lastSync, guide] = await Promise.all([
+    api("/kb/notion/last-sync"), cachedApi("/kb/manual-source-guide"),
   ]);
 
   const guideRows = guide.guide.map(
     (g) => `<tr><td>${escapeHtml(g.source_type)}</td><td>${escapeHtml(g.처리방식)}</td></tr>`
   ).join("");
 
-  const rows = docs.documents.map((d) => `
-    <tr>
-      <td>${escapeHtml(d.title)}</td>
-      <td>${escapeHtml(d.source_type)}</td>
-      <td>${escapeHtml(d.source_origin)}</td>
-      <td>${escapeHtml(d.category)}</td>
-      <td>
-        ${d.is_editable ? `<button class="btn btn-secondary" data-embed="${d.doc_id}">갱신</button>` : ""}
-        <button class="btn btn-danger" data-delete="${d.doc_id}" ${d.is_editable ? "" : "disabled"}>삭제</button>
-      </td>
-    </tr>
-  `).join("");
-
-  main.innerHTML = `<h1>Knowledge Base 조회/관리</h1>
+  main.innerHTML = `<h1>Knowledge Base 관리</h1>
     <div class="card">
       <div class="card-header-row">
         <div>
@@ -627,10 +615,10 @@ async function renderKb(main) {
       <p class="muted">노션을 수정한 직후 바로 반영하려면 이 버튼을 사용하세요.</p>
     </div>
     ` + cardWithDetail(
-      "전체 문서 목록", "노션 소스는 조회 전용이며 삭제 버튼이 비활성화됩니다.",
+      "문서 등록/갱신", "파일 업로드·구글 시트·노션 즉시갱신을 이 화면에서 진행합니다. 문서 목록 조회는 'KB 문서목록' 메뉴를 이용해주세요.",
       `수동 업로드 가능한 소스 타입별 처리 방식:
        <div class="table-scroll"><table><thead><tr><th>소스 타입</th><th>처리 방식</th></tr></thead><tbody>${guideRows}</tbody></table></div>
-       <p style="margin-top:10px;">파일 업로드나 구글 스프레드시트로 추가한 문서는 목록에 바로 보이지만, "갱신" 버튼을 눌러 확인해줘야 챗봇이 실제로 그 내용을 찾아 답변할 수 있습니다.</p>
+       <p style="margin-top:10px;">파일 업로드나 구글 스프레드시트로 추가한 문서는 'KB 문서목록' 메뉴에서 확인할 수 있지만, "갱신" 버튼을 눌러 확인해줘야 챗봇이 실제로 그 내용을 찾아 답변할 수 있습니다.</p>
        <p style="margin-top:10px;">검색 정확도를 높이기 위해, 소제목 스타일이 없는 긴 문서(800자 이상)는 파일 1개를 업로드해도 "(파트 1)", "(파트 2)"처럼 여러 건으로 자동 분할되어 등록됩니다. 같은 출처(파일명)로 여러 줄이 보이는 건 오류가 아니라 정상 동작입니다.</p>
        <p style="margin-top:10px;">구글 스프레드시트는 시트의 행(row) 1개가 문서 1개로 등록됩니다. 시트에 10개 행이 있으면 문서도 10건 등록되는 게 정상이며, 각 문서의 제목은 시트의 "질문/제목" 컬럼 값을 그대로 사용합니다.</p>`,
       `
@@ -653,9 +641,6 @@ async function renderKb(main) {
         <span class="muted">업로드한 문서·노션·캘린더를 통틀어 아직 반영되지 않은 것을 한 번에 재시도합니다 (행이 많은 시트 등록 후, 또는 "지금 갱신" 중 임베딩 실패가 있었을 때 추천).</span>
         <span id="kb-embed-all-result"></span>
       </div>
-      ${docs.documents.length
-        ? `<div class="table-scroll"><table><thead><tr><th>제목</th><th>유형</th><th>출처</th><th>카테고리</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
-        : `<p class="muted">등록된 문서가 없습니다.</p>`}
       `
     );
   bindAccordions(main);
@@ -680,38 +665,6 @@ async function renderKb(main) {
     }
   });
 
-  main.querySelectorAll("[data-delete]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (!confirm("이 문서를 삭제할까요?")) return;
-      const originalText = btn.textContent;
-      btn.disabled = true;
-      btn.innerHTML = `<span class="spinner"></span> 삭제 중...`;
-      try {
-        await api(`/kb/documents/${btn.dataset.delete}`, { method: "DELETE" });
-        renderKb(main);
-      } catch (err) {
-        alert("삭제 실패: " + err.message);
-        btn.disabled = false;
-        btn.textContent = originalText;
-      }
-    });
-  });
-
-  main.querySelectorAll("[data-embed]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      if (!confirm("이 문서를 지식베이스에 반영하시겠습니까?")) return;
-      btn.disabled = true;
-      try {
-        await api(`/kb/documents/${btn.dataset.embed}/embed`, { method: "POST" });
-        alert("지식베이스에 반영되었습니다.");
-      } catch (err) {
-        alert("반영 실패: " + err.message);
-      } finally {
-        btn.disabled = false;
-      }
-    });
-  });
-
   document.getElementById("kb-embed-all-btn").addEventListener("click", async (e) => {
     const btn = e.target;
     const resultEl = document.getElementById("kb-embed-all-result");
@@ -725,7 +678,6 @@ async function renderKb(main) {
       resultEl.innerHTML = result.embedded
         ? `<span class="success-text">${result.embedded}건 반영 완료${failNote}</span>`
         : `<span class="muted">반영할 문서가 없습니다.</span>`;
-      renderKb(main);
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">일괄 갱신 실패: ${escapeHtml(err.message)}</span>`;
     } finally {
@@ -752,7 +704,6 @@ async function renderKb(main) {
         ? ` (검색 정확도를 위해 긴 문서가 ${result.inserted}건으로 자동 분할되었습니다)`
         : "";
       resultEl.innerHTML = `<span class="success-text">${result.inserted}건 저장 완료${splitNote}</span>`;
-      renderKb(main);
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
     } finally {
@@ -772,12 +723,90 @@ async function renderKb(main) {
       });
       resultEl.innerHTML =
         `<span class="success-text">${result.inserted}건 저장 완료 (시트의 행 1개 = 문서 1개로 등록됩니다)</span>`;
-      renderKb(main);
     } catch (err) {
       resultEl.innerHTML = `<span class="error-text">${escapeHtml(err.message)}</span>`;
     } finally {
       btn.disabled = false;
     }
+  });
+}
+
+// ── ④ KB 문서목록 (페이지네이션) ────────────────────────────────
+
+async function renderKbDocuments(main, page = 0) {
+  const limit = 30;
+  const data = await api(`/kb/documents?limit=${limit}&offset=${page * limit}`);
+  const hasMore = data.documents.length === limit;
+
+  const rows = data.documents.map((d) => `
+    <tr>
+      <td>${escapeHtml(d.title)}</td>
+      <td>${escapeHtml(d.source_type)}</td>
+      <td>${escapeHtml(d.source_origin)}</td>
+      <td>${escapeHtml(d.category)}</td>
+      <td>
+        ${d.is_editable ? `<button class="btn btn-secondary" data-embed="${d.doc_id}">갱신</button>` : ""}
+        <button class="btn btn-danger" data-delete="${d.doc_id}" ${d.is_editable ? "" : "disabled"}>삭제</button>
+      </td>
+    </tr>
+  `).join("");
+
+  main.innerHTML = `<h1>KB 문서목록</h1>` + cardWithDetail(
+    "전체 문서 목록", "노션 소스는 조회 전용이며 삭제 버튼이 비활성화됩니다.",
+    "지식 베이스에 등록된 문서를 페이지 단위로 조회합니다. 문서 등록·업로드는 'Knowledge Base' 메뉴에서 합니다.",
+    (data.documents.length
+      ? `<div class="table-scroll"><table><thead><tr><th>제목</th><th>유형</th><th>출처</th><th>카테고리</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<p class="muted">등록된 문서가 없습니다.</p>`)
+    + `<div class="pagination-row">
+        <button id="kb-doc-prev" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>이전</button>
+        <span>페이지 ${page + 1}</span>
+        <button id="kb-doc-more" class="btn btn-secondary" ${hasMore ? "" : "disabled"}>더보기</button>
+        <span class="muted pagination-info">(최대 30건/1페이지)</span>
+        <button id="kb-doc-first" class="btn btn-secondary" ${page === 0 ? "disabled" : ""}>처음 페이지로 이동</button>
+      </div>`
+  );
+  bindAccordions(main);
+
+  document.getElementById("kb-doc-prev").addEventListener("click", () => {
+    renderKbDocuments(main, page - 1);
+  });
+  document.getElementById("kb-doc-more").addEventListener("click", () => {
+    renderKbDocuments(main, page + 1);
+  });
+  document.getElementById("kb-doc-first").addEventListener("click", () => {
+    renderKbDocuments(main, 0);
+  });
+
+  main.querySelectorAll("[data-delete]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("이 문서를 삭제할까요?")) return;
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span> 삭제 중...`;
+      try {
+        await api(`/kb/documents/${btn.dataset.delete}`, { method: "DELETE" });
+        renderKbDocuments(main, page);
+      } catch (err) {
+        alert("삭제 실패: " + err.message);
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
+    });
+  });
+
+  main.querySelectorAll("[data-embed]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("이 문서를 지식베이스에 반영하시겠습니까?")) return;
+      btn.disabled = true;
+      try {
+        await api(`/kb/documents/${btn.dataset.embed}/embed`, { method: "POST" });
+        alert("지식베이스에 반영되었습니다.");
+      } catch (err) {
+        alert("반영 실패: " + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
   });
 }
 

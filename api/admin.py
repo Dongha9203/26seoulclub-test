@@ -383,12 +383,16 @@ def update_api_params(req: ApiParamsUpdate, operator_email: str = Depends(get_cu
 # ── Knowledge Base 조회/관리 ─────────────────────────────────────────
 
 @app.get("/kb/documents")
-def list_documents(operator_email: str = Depends(get_current_operator)):
-    from storage.supabase_store import get_all
+def list_documents(
+    limit: int = 30,
+    offset: int = 0,
+    operator_email: str = Depends(get_current_operator),
+):
+    from storage.supabase_store import get_paginated
     conn = _get_admin_db()
-    docs = get_all(conn=conn)
+    docs, total = get_paginated(limit, offset, conn=conn)
     conn.rollback()
-    return {"documents": [d.to_dict() for d in docs]}
+    return {"documents": [d.to_dict() for d in docs], "total": total}
 
 
 @app.delete("/kb/documents/{doc_id}")

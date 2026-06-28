@@ -258,6 +258,23 @@ def get_all(conn=None) -> List[Document]:
     return [_row_to_doc(r) for r in rows]
 
 
+def get_paginated(limit: int, offset: int, conn=None):
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute("SELECT COUNT(*) AS cnt FROM documents")
+            total = cur.fetchone()["cnt"]
+            cur.execute(
+                "SELECT * FROM documents ORDER BY last_updated DESC LIMIT %s OFFSET %s",
+                (limit, offset),
+            )
+            rows = cur.fetchall()
+    finally:
+        if owns_conn:
+            c.close()
+    return [_row_to_doc(r) for r in rows], total
+
+
 def get_by_source_type(source_type: str, conn=None) -> List[Document]:
     c, owns_conn = _with_conn(conn)
     try:
