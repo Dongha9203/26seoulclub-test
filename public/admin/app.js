@@ -372,7 +372,7 @@ async function renderDailyCounts(main, page = 0, startDate = null, endDate = nul
   const hasMore = data.daily_counts.length === limit;
   main.innerHTML = `<h1>일별 질의/응답 건수</h1>` + cardWithDetail(
     "날짜별 집계",
-    "최근 날짜부터 날짜별로 집계한 결과입니다. (자료가 최고 1년을 보관하고 이후 자동삭제 되어, 1년이 지난 건은 집계에서 빠집니다.)",
+    "최근 날짜부터 날짜별로 집계한 결과입니다. (자료가 최고 3개월을 보관하고 이후 자동삭제 되어, 3개월이 지난 건은 집계에서 빠집니다.)",
     "매일 챗봇에 들어온 질문 수를 날짜별로 보여줍니다. 운영 추이를 파악하는 데 사용합니다.",
     dateRangeFilterHtml(maxMonths, startDate, endDate, "daily-counts-filter")
     + (data.daily_counts.length
@@ -513,7 +513,7 @@ async function renderActionList(endpoint, title, subtitle, page = 0, startDate =
 }
 
 async function renderFailureReport(main, startDate = null, endDate = null) {
-  const maxMonths = 12;
+  const maxMonths = 3;
   const dateQuery = (startDate && endDate) ? `?start_date=${startDate}&end_date=${endDate}` : "";
   const data = await api(`/actions/failure-report${dateQuery}`);
   const total = Object.values(data.counts).reduce((sum, cnt) => sum + cnt, 0);

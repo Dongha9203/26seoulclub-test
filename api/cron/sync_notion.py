@@ -35,7 +35,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-_QA_LOG_RETENTION_DAYS = 365
+_QA_LOG_RETENTION_DAYS = 90
 
 
 def _perform_incremental_sync() -> dict:
