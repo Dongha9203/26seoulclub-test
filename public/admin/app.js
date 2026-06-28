@@ -615,10 +615,10 @@ async function renderKb(main) {
       <p class="muted">노션을 수정한 직후 바로 반영하려면 이 버튼을 사용하세요.</p>
     </div>
     ` + cardWithDetail(
-      "문서 등록/갱신", "파일 업로드·구글 시트·노션 즉시갱신을 이 화면에서 진행합니다. 문서 목록 조회는 'KB 문서목록' 메뉴를 이용해주세요.",
+      "문서 등록/갱신", "파일 업로드·구글 시트·노션 즉시갱신을 이 화면에서 진행합니다. 문서 목록 조회는 'KB 데이터목록' 메뉴를 이용해주세요.",
       `수동 업로드 가능한 소스 타입별 처리 방식:
        <div class="table-scroll"><table><thead><tr><th>소스 타입</th><th>처리 방식</th></tr></thead><tbody>${guideRows}</tbody></table></div>
-       <p style="margin-top:10px;">파일 업로드나 구글 스프레드시트로 추가한 문서는 'KB 문서목록' 메뉴에서 확인할 수 있지만, "갱신" 버튼을 눌러 확인해줘야 챗봇이 실제로 그 내용을 찾아 답변할 수 있습니다.</p>
+       <p style="margin-top:10px;">파일 업로드나 구글 스프레드시트로 추가한 문서는 'KB 데이터목록' 메뉴에서 확인할 수 있지만, "갱신" 버튼을 눌러 확인해줘야 챗봇이 실제로 그 내용을 찾아 답변할 수 있습니다.</p>
        <p style="margin-top:10px;">검색 정확도를 높이기 위해, 소제목 스타일이 없는 긴 문서(800자 이상)는 파일 1개를 업로드해도 "(파트 1)", "(파트 2)"처럼 여러 건으로 자동 분할되어 등록됩니다. 같은 출처(파일명)로 여러 줄이 보이는 건 오류가 아니라 정상 동작입니다.</p>
        <p style="margin-top:10px;">구글 스프레드시트는 시트의 행(row) 1개가 문서 1개로 등록됩니다. 시트에 10개 행이 있으면 문서도 10건 등록되는 게 정상이며, 각 문서의 제목은 시트의 "질문/제목" 컬럼 값을 그대로 사용합니다.</p>`,
       `
@@ -731,12 +731,28 @@ async function renderKb(main) {
   });
 }
 
-// ── ④ KB 문서목록 (페이지네이션) ────────────────────────────────
+// ── ④ KB 데이터목록 (페이지네이션) ────────────────────────────────
+
+const KB_TYPE_LABELS = {
+  notion: "노션페이지",
+  google_sheets: "구글스프레드시트",
+  google_calendar: "구글캘린더",
+  airtable: "Airtable",
+  docx: "워드",
+  word: "워드",
+  file: "파일",
+};
 
 async function renderKbDocuments(main, page = 0) {
   const limit = 30;
   const data = await api(`/kb/documents?limit=${limit}&offset=${page * limit}`);
   const hasMore = data.documents.length === limit;
+
+  const typeCounts = data.type_counts || {};
+  const countLabel = Object.entries(typeCounts)
+    .filter(([, cnt]) => cnt > 0)
+    .map(([type, cnt]) => `${KB_TYPE_LABELS[type] || type} ${cnt}건`)
+    .join(", ") || "등록된 데이터 없음";
 
   const rows = data.documents.map((d) => `
     <tr>
@@ -751,8 +767,8 @@ async function renderKbDocuments(main, page = 0) {
     </tr>
   `).join("");
 
-  main.innerHTML = `<h1>KB 문서목록</h1>` + cardWithDetail(
-    "전체 문서 목록", "노션 소스는 조회 전용이며 삭제 버튼이 비활성화됩니다.",
+  main.innerHTML = `<h1>KB 데이터목록</h1>` + cardWithDetail(
+    countLabel, "노션 소스는 조회 전용이며 삭제 버튼이 비활성화됩니다.",
     "지식 베이스에 등록된 문서를 페이지 단위로 조회합니다. 문서 등록·업로드는 'Knowledge Base' 메뉴에서 합니다.",
     (data.documents.length
       ? `<div class="table-scroll"><table><thead><tr><th>제목</th><th>유형</th><th>출처</th><th>카테고리</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`

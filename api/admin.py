@@ -388,11 +388,12 @@ def list_documents(
     offset: int = 0,
     operator_email: str = Depends(get_current_operator),
 ):
-    from storage.supabase_store import get_paginated
+    from storage.supabase_store import get_paginated, get_source_type_counts
     conn = _get_admin_db()
     docs, total = get_paginated(limit, offset, conn=conn)
+    type_counts = get_source_type_counts(conn=conn)
     conn.rollback()
-    return {"documents": [d.to_dict() for d in docs], "total": total}
+    return {"documents": [d.to_dict() for d in docs], "total": total, "type_counts": type_counts}
 
 
 @app.delete("/kb/documents/{doc_id}")

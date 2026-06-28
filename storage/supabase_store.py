@@ -275,6 +275,20 @@ def get_paginated(limit: int, offset: int, conn=None):
     return [_row_to_doc(r) for r in rows], total
 
 
+def get_source_type_counts(conn=None) -> dict:
+    c, owns_conn = _with_conn(conn)
+    try:
+        with c.cursor() as cur:
+            cur.execute(
+                "SELECT source_type, COUNT(*) AS cnt FROM documents GROUP BY source_type"
+            )
+            rows = cur.fetchall()
+    finally:
+        if owns_conn:
+            c.close()
+    return {row["source_type"]: row["cnt"] for row in rows}
+
+
 def get_by_source_type(source_type: str, conn=None) -> List[Document]:
     c, owns_conn = _with_conn(conn)
     try:
