@@ -625,7 +625,11 @@ async function renderKb(main) {
       <div style="display:flex; gap:24px; flex-wrap:wrap; margin-bottom:16px;">
         <div>
           <label>파일 업로드 (.docx/.pdf/.xlsx)</label>
-          <input type="file" id="kb-file-input" accept=".docx,.pdf,.xlsx">
+          <div style="display:flex; align-items:center; gap:8px; margin-top:4px;">
+            <label for="kb-file-input" class="btn btn-secondary" style="margin:0; cursor:pointer;">파일 선택</label>
+            <span id="kb-file-name" style="font-size:var(--text-sm); color:var(--color-text-muted);">선택된 파일 없음</span>
+          </div>
+          <input type="file" id="kb-file-input" accept=".docx,.pdf,.xlsx" style="display:none;">
           <button id="kb-file-upload-btn" class="btn" style="margin-top:8px;">업로드</button>
           <div id="kb-file-result"></div>
         </div>
@@ -684,6 +688,11 @@ async function renderKb(main) {
       btn.disabled = false;
       btn.textContent = "전체 갱신";
     }
+  });
+
+  document.getElementById("kb-file-input").addEventListener("change", (e) => {
+    const name = e.target.files[0]?.name || "선택된 파일 없음";
+    document.getElementById("kb-file-name").textContent = name;
   });
 
   document.getElementById("kb-file-upload-btn").addEventListener("click", async (e) => {
