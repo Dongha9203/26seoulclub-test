@@ -418,7 +418,7 @@ async function renderQaLogs(main, page = 0, startDate = null, endDate = null) {
   const hasMore = data.logs.length === limit;
   main.innerHTML = `<h1>질의-답변 연계조회</h1>` + cardWithDetail(
     "최근 질의-답변",
-    "사용자 질문과 챗봇 답변을 함께 보여줍니다. (이 자료는 최고 1년을 보관하고, 이후 자동삭제 됩니다.)",
+    "사용자 질문과 챗봇 답변을 함께 보여줍니다. (이 자료는 최고 3개월을 보관하고, 이후 자동삭제 됩니다.)",
     "사용자의 질문과 챗봇이 실제로 보낸 답변을 짝지어 확인할 수 있는 화면입니다.",
     dateRangeFilterHtml(maxMonths, startDate, endDate, "qa-logs-filter")
     + (data.logs.length
@@ -522,7 +522,7 @@ async function renderFailureReport(main, startDate = null, endDate = null) {
   ).join("") + `<tr><td><strong>합계</strong></td><td><strong>${total}</strong></td></tr>`;
   main.innerHTML = `<h1>원인별 집계 리포트</h1>` + cardWithDetail(
     "실패 원인별 집계",
-    "최근 1년간 누적된 건수입니다. (자료가 최고 1년을 보관하고 이후 자동삭제 되어, 1년이 지난 건은 집계에서 빠집니다.)",
+    "최근 3개월간 누적된 건수입니다. (자료가 최고 3개월을 보관하고 이후 자동삭제 되어, 3개월이 지난 건은 집계에서 빠집니다.)",
     "검색 실패의 원인을 5가지로 분류해 건수를 보여줍니다." +
     `<ul style="margin:8px 0 0; padding-left:18px;">
       <li style="margin-bottom:6px;"><strong>지식DB공백</strong> — 동아리ON 운영과 관련은 있어 보이는 질문인데, 지식 베이스(Knowledge Base)에 그 내용을 다루는 문서가 아예 없어서 챗봇이 직접 답하지 못하고 운영팀 연락처를 안내한 경우입니다. 해당 내용을 지식 베이스에 새로 등록하면 다음부터는 답할 수 있습니다.</li>
