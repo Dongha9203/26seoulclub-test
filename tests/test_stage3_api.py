@@ -92,8 +92,8 @@ class TestChatApi:
 
         self.fake_engine = MagicMock()
         monkeypatch.setattr("chatbot_engine.ChatbotEngine", MagicMock(return_value=self.fake_engine))
-        # api/chat.py는 connection을 직접 열지 않고 항상 conn=None으로 호출하므로,
-        # 같은 Supabase 프로젝트를 보는 pg_conn으로 사전에 적재한 데이터가 그대로 보입니다.
+        # api/chat.py는 요청마다 get_connection()으로 새 커넥션을 엽니다.
+        # insert_qa_log는 pg_conn으로 커밋하므로, API가 여는 새 커넥션에서도 그 데이터가 보입니다.
         self.pg_conn = pg_conn
 
         yield TestClient(chat_module.app)

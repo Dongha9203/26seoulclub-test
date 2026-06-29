@@ -7,8 +7,10 @@ Vercel의 Python 빌더가 fastapi 의존성이 있으면 프로젝트 전체에
 (/api/chat, /api/admin/*, /api/sync_notion, /api/cron/sync_notion).
 """
 
+import json
 import logging
 import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -21,7 +23,28 @@ from api.cron.sync_notion import _perform_incremental_sync
 
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+_config_path = Path(__file__).parent.parent / "config.json"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 콜드 스타트 시 첫 요청의 코퍼스 로드 지연(~5초)을 없애기 위해
+    # 앱 초기화 단계에서 미리 로드합니다. 실패해도 앱은 정상 기동하고
+    # 첫 요청에서 재시도됩니다.
+    try:
+        with open(_config_path, encoding="utf-8") as f:
+            config = json.load(f)
+        model_name = config.get("embedding_model")
+        if model_name:
+            from hybrid_search import _load_corpus
+            _load_corpus(model_name)
+            logger.info("코퍼스 캐시 예열 완료 (model=%s)", model_name)
+    except Exception:
+        logger.warning("코퍼스 캐시 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+    yield
+
+
+app = FastAPI(lifespan=lifespan)
 app.include_router(chat_app.router)
 app.include_router(admin_app.router, prefix="/api/admin")
 

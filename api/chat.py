@@ -83,7 +83,7 @@ class ChatResponse(BaseModel):
 
 @app.post("/api/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
-    from storage.supabase_store import count_recent_requests
+    from storage.supabase_store import count_recent_requests, get_connection
     from chatbot_engine import ChatbotEngine
 
     config = _build_config()
@@ -96,20 +96,23 @@ def chat(req: ChatRequest):
             content={"error": f"질문은 {max_len}자 이하로 입력해주세요."},
         )
 
-    if count_recent_requests(req.session_id, 60) >= rate_limit:
-        return JSONResponse(
-            status_code=429,
-            content={"error": "잠시 후 다시 시도해주세요."},
-        )
-
+    conn = get_connection()
     try:
-        engine = ChatbotEngine(config)
+        if count_recent_requests(req.session_id, 60, conn=conn) >= rate_limit:
+            return JSONResponse(
+                status_code=429,
+                content={"error": "잠시 후 다시 시도해주세요."},
+            )
+
+        engine = ChatbotEngine(config, conn=conn)
         response = engine.handle_question(req.question, req.session_id)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception:
         logger.exception("chat 처리 중 오류 발생")
         return JSONResponse(status_code=500, content={"error": "일시적인 오류가 발생했습니다."})
+    finally:
+        conn.close()
 
     return ChatResponse(answer=response.answer, deep_link=response.deep_link)
 
@@ -123,7 +126,7 @@ def chat_stream(req: ChatRequest):
     질문 글자수/분당 요청 제한 체크는 스트림을 열기 전에 먼저 끝내서, /api/chat과
     동일하게 평범한 400/429 JSON 응답으로 처리합니다.
     """
-    from storage.supabase_store import count_recent_requests
+    from storage.supabase_store import count_recent_requests, get_connection
     from chatbot_engine import ChatbotEngine
 
     config = _build_config()
@@ -136,7 +139,15 @@ def chat_stream(req: ChatRequest):
             content={"error": f"질문은 {max_len}자 이하로 입력해주세요."},
         )
 
-    if count_recent_requests(req.session_id, 60) >= rate_limit:
+    conn = get_connection()
+    try:
+        over_limit = count_recent_requests(req.session_id, 60, conn=conn) >= rate_limit
+    except Exception:
+        conn.close()
+        raise
+
+    if over_limit:
+        conn.close()
         return JSONResponse(
             status_code=429,
             content={"error": "잠시 후 다시 시도해주세요."},
@@ -144,7 +155,7 @@ def chat_stream(req: ChatRequest):
 
     def event_stream():
         try:
-            engine = ChatbotEngine(config)
+            engine = ChatbotEngine(config, conn=conn)
             for event in engine.handle_question_stream(req.question, req.session_id):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except ValueError as e:
@@ -152,5 +163,7 @@ def chat_stream(req: ChatRequest):
         except Exception:
             logger.exception("chat stream 처리 중 오류 발생")
             yield f"data: {json.dumps({'type': 'error', 'error': '일시적인 오류가 발생했습니다.'}, ensure_ascii=False)}\n\n"
+        finally:
+            conn.close()
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
