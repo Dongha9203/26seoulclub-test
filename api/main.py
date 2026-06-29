@@ -28,19 +28,33 @@ _config_path = Path(__file__).parent.parent / "config.json"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # 콜드 스타트 시 첫 요청의 코퍼스 로드 지연(~5초)을 없애기 위해
-    # 앱 초기화 단계에서 미리 로드합니다. 실패해도 앱은 정상 기동하고
-    # 첫 요청에서 재시도됩니다.
+    config = {}
     try:
         with open(_config_path, encoding="utf-8") as f:
             config = json.load(f)
-        model_name = config.get("embedding_model")
-        if model_name:
+    except Exception:
+        logger.warning("startup: config.json 로드 실패", exc_info=True)
+
+    model_name = config.get("embedding_model")
+    if model_name:
+        # 1. 코퍼스 캐시 예열 — DB 로드(~5초) + Kiwi 형태소분석기 초기화를
+        #    첫 요청 전에 완료해 콜드 스타트 지연을 없앱니다.
+        try:
             from hybrid_search import _load_corpus
             _load_corpus(model_name)
-            logger.info("코퍼스 캐시 예열 완료 (model=%s)", model_name)
-    except Exception:
-        logger.warning("코퍼스 캐시 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+            logger.info("startup: 코퍼스 캐시 예열 완료 (model=%s)", model_name)
+        except Exception:
+            logger.warning("startup: 코퍼스 캐시 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+
+        # 2. Voyage AI HTTP 커넥션 예열 — 첫 호출에만 ~1.5초 발생하는
+        #    TCP/TLS 수립 비용을 첫 요청 전에 지불합니다.
+        try:
+            from embedding_manager import get_embedding_provider
+            get_embedding_provider(config).embed_query("예열")
+            logger.info("startup: Voyage AI 커넥션 예열 완료")
+        except Exception:
+            logger.warning("startup: Voyage AI 커넥션 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+
     yield
 
 
