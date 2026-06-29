@@ -96,6 +96,9 @@ def chat(req: ChatRequest):
             content={"error": f"질문은 {max_len}자 이하로 입력해주세요."},
         )
 
+    from api.startup_state import consume_cold_start_ms
+    cold_start_ms = consume_cold_start_ms()
+
     conn = get_connection()
     try:
         if count_recent_requests(req.session_id, 60, conn=conn) >= rate_limit:
@@ -104,7 +107,7 @@ def chat(req: ChatRequest):
                 content={"error": "잠시 후 다시 시도해주세요."},
             )
 
-        engine = ChatbotEngine(config, conn=conn)
+        engine = ChatbotEngine(config, conn=conn, cold_start_ms=cold_start_ms)
         response = engine.handle_question(req.question, req.session_id)
     except ValueError as e:
         return JSONResponse(status_code=400, content={"error": str(e)})
@@ -139,6 +142,9 @@ def chat_stream(req: ChatRequest):
             content={"error": f"질문은 {max_len}자 이하로 입력해주세요."},
         )
 
+    from api.startup_state import consume_cold_start_ms
+    cold_start_ms = consume_cold_start_ms()
+
     conn = get_connection()
     try:
         over_limit = count_recent_requests(req.session_id, 60, conn=conn) >= rate_limit
@@ -155,7 +161,7 @@ def chat_stream(req: ChatRequest):
 
     def event_stream():
         try:
-            engine = ChatbotEngine(config, conn=conn)
+            engine = ChatbotEngine(config, conn=conn, cold_start_ms=cold_start_ms)
             for event in engine.handle_question_stream(req.question, req.session_id):
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except ValueError as e:

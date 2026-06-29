@@ -118,9 +118,11 @@ def _elapsed_ms(start: float) -> int:
 class ChatbotEngine:
     def __init__(self, config: dict, conn=None,
                  search_engine: Optional[HybridSearchEngine] = None,
-                 anthropic_client=None):
+                 anthropic_client=None,
+                 cold_start_ms: int = 0):
         self._config = config
         self._conn = conn
+        self._cold_start_ms = cold_start_ms
         self._forbidden_words = _load_forbidden_words(config.get("forbidden_words"))
         self._search_engine = search_engine or HybridSearchEngine(
             get_embedding_provider(config), config
@@ -243,7 +245,7 @@ class ChatbotEngine:
                 "response_attitude": ResponseAttitude.ESCALATION.value,
                 "answer": answer, "sentiment_score": None, "repeated_count": 0,
                 "matched_doc_ids": [], "deep_link": None,
-                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start) + self._cold_start_ms,
             })
             yield ("done", response)
             return
@@ -277,7 +279,7 @@ class ChatbotEngine:
                 "failure_cause": FailureCause.QUESTION_AMBIGUITY.value, "situation": None, "response_attitude": None,
                 "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
                 "matched_doc_ids": [], "deep_link": None,
-                "escalated_to_operation_team": False, "latency_ms": _elapsed_ms(start),
+                "escalated_to_operation_team": False, "latency_ms": _elapsed_ms(start) + self._cold_start_ms,
             })
             yield ("done", response)
             return
@@ -310,7 +312,7 @@ class ChatbotEngine:
                 "failure_cause": FailureCause.API_ERROR.value, "situation": None, "response_attitude": None,
                 "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
                 "matched_doc_ids": [], "deep_link": None,
-                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start) + self._cold_start_ms,
             })
             yield ("done", response)
             return
@@ -344,7 +346,7 @@ class ChatbotEngine:
                 "failure_cause": cause.value, "situation": None, "response_attitude": None,
                 "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
                 "matched_doc_ids": [], "deep_link": None,
-                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start) + self._cold_start_ms,
             })
             yield ("done", response)
             return
@@ -384,7 +386,7 @@ class ChatbotEngine:
                 "situation": situation.value, "response_attitude": ResponseAttitude.ESCALATION.value,
                 "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
                 "matched_doc_ids": [], "deep_link": None,
-                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start) + self._cold_start_ms,
             })
             yield ("done", response)
             return
@@ -435,7 +437,7 @@ class ChatbotEngine:
                 "situation": None, "response_attitude": None,
                 "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
                 "matched_doc_ids": [], "deep_link": None,
-                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start) + self._cold_start_ms,
             })
             yield ("done", response)
             return
@@ -472,6 +474,6 @@ class ChatbotEngine:
             "answer": answer, "sentiment_score": sentiment_score,
             "repeated_count": repeated_count, "matched_doc_ids": matched_doc_ids,
             "deep_link": deep_link, "escalated_to_operation_team": not resolved,
-            "latency_ms": _elapsed_ms(start),
+            "latency_ms": _elapsed_ms(start) + self._cold_start_ms,
         })
         yield ("done", response)

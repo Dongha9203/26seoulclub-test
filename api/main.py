@@ -9,6 +9,7 @@ Vercel의 Python 빌더가 fastapi 의존성이 있으면 프로젝트 전체에
 
 import json
 import logging
+import time
 import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -28,6 +29,9 @@ _config_path = Path(__file__).parent.parent / "config.json"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from api.startup_state import record_cold_start_ms
+
+    _t0 = time.monotonic()
     config = {}
     try:
         with open(_config_path, encoding="utf-8") as f:
@@ -54,6 +58,10 @@ async def lifespan(app: FastAPI):
             logger.info("startup: Voyage AI 커넥션 예열 완료")
         except Exception:
             logger.warning("startup: Voyage AI 커넥션 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+
+    cold_ms = int((time.monotonic() - _t0) * 1000)
+    record_cold_start_ms(cold_ms)
+    logger.info("startup: cold start 완료 (%dms)", cold_ms)
 
     yield
 
