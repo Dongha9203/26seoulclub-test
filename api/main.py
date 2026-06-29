@@ -41,23 +41,29 @@ async def lifespan(app: FastAPI):
 
     model_name = config.get("embedding_model")
     if model_name:
-        # 1. 코퍼스 캐시 예열 — DB 로드(~5초) + Kiwi 형태소분석기 초기화를
-        #    첫 요청 전에 완료해 콜드 스타트 지연을 없앱니다.
-        try:
-            from hybrid_search import _load_corpus
-            _load_corpus(model_name)
-            logger.info("startup: 코퍼스 캐시 예열 완료 (model=%s)", model_name)
-        except Exception:
-            logger.warning("startup: 코퍼스 캐시 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+        # 코퍼스 로드(~5s)와 Voyage AI 커넥션 예열(~1.5s)을 동시에 실행해
+        # cold start 시간을 약 1.5초 단축합니다.
+        import asyncio
+        loop = asyncio.get_running_loop()
 
-        # 2. Voyage AI HTTP 커넥션 예열 — 첫 호출에만 ~1.5초 발생하는
-        #    TCP/TLS 수립 비용을 첫 요청 전에 지불합니다.
-        try:
-            from embedding_manager import get_embedding_provider
-            get_embedding_provider(config).embed_query("예열")
-            logger.info("startup: Voyage AI 커넥션 예열 완료")
-        except Exception:
-            logger.warning("startup: Voyage AI 커넥션 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+        async def _warmup_corpus():
+            try:
+                from hybrid_search import _load_corpus
+                await loop.run_in_executor(None, _load_corpus, model_name)
+                logger.info("startup: 코퍼스 캐시 예열 완료 (model=%s)", model_name)
+            except Exception:
+                logger.warning("startup: 코퍼스 캐시 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+
+        async def _warmup_voyage():
+            try:
+                from embedding_manager import get_embedding_provider
+                provider = get_embedding_provider(config)
+                await loop.run_in_executor(None, provider.embed_query, "예열")
+                logger.info("startup: Voyage AI 커넥션 예열 완료")
+            except Exception:
+                logger.warning("startup: Voyage AI 커넥션 예열 실패 — 첫 요청에서 재시도됩니다", exc_info=True)
+
+        await asyncio.gather(_warmup_corpus(), _warmup_voyage())
 
     cold_ms = int((time.monotonic() - _t0) * 1000)
     record_cold_start_ms(cold_ms)
