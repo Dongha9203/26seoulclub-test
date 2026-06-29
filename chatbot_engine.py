@@ -4,7 +4,9 @@
 처리 흐름:
   1. 욕설/혐오표현 초경량 필터 (사전 매칭, API 호출 없음) — 매칭 시 즉시 에스컬레이션 응답
   2. 질문모호성 사전 체크 (의미있는 키워드 없음) — 매칭 시 즉시 운영팀 폴백
-  3. 필터 통과 시 → 하이브리드 검색 (내부에서 Voyage AI 임베딩 수행)
+  3. 필터 통과 시 → 하이브리드 검색 (내부에서 Voyage AI 임베딩 수행).
+     검색 자체가 실패하면(Voyage AI 레이트리밋/네트워크 오류 등) failure_cause="API오류"로
+     남기고 운영팀 폴백 응답을 반환합니다 (Claude API 오류와 동일한 처리).
   4. 검색 결과가 전혀 없는 경우만 즉시 운영팀 폴백. 결과가 있으면 신뢰도
      점수가 낮아도 Claude까지 보내고, "확신이 낮을 수 있다"는 신호만 함께
      전달합니다 (코퍼스가 작을 때 신뢰도 점수가 질문 관련성과 무관하게
@@ -281,7 +283,37 @@ class ChatbotEngine:
             return
 
         # ── step: 하이브리드 검색 ─────────────────────────────────────────
-        results = self._search_engine.search(question, self._conn)
+        # Voyage AI embed_query가 실패하면(레이트리밋/네트워크 오류 등) 검색 자체가
+        # 불가능하므로, Claude API 오류와 동일하게 failure_cause="API오류"로 기록하고
+        # 운영팀 폴백 응답을 반환합니다. 이전에는 예외가 그대로 올라가 로그가 전혀
+        # 남지 않고 사용자에게도 일반 500 오류만 갔습니다.
+        try:
+            results = self._search_engine.search(question, self._conn)
+        except Exception:
+            logger.exception("임베딩/검색 중 오류 발생")
+            answer = (
+                "죄송합니다, 일시적으로 답변을 생성하지 못했습니다. 잠시 후 다시 시도해 주시거나, "
+                "급하신 경우 아래 운영팀으로 문의해 주세요.\n\n" + _format_operation_team_contact(self._config)
+            )
+            yield ("delta", answer)
+            response = ChatbotResponse(
+                answer=answer, situation=None, response_attitude=None,
+                failure_cause=FailureCause.API_ERROR, sentiment_score=None, search_success=False,
+                blocked_by_filter=False, escalated_to_operation_team=True,
+                top_score=0.0, deep_link=None, repeated_count=repeated_count,
+                category=category, keywords=keywords,
+            )
+            self._write_log({
+                "log_id": log_id, "timestamp": timestamp, "session_id": session_id,
+                "question": question, "keywords": keywords, "question_category": category,
+                "blocked_by_filter": False, "search_success": False, "top_score": 0.0,
+                "failure_cause": FailureCause.API_ERROR.value, "situation": None, "response_attitude": None,
+                "answer": answer, "sentiment_score": None, "repeated_count": repeated_count,
+                "matched_doc_ids": [], "deep_link": None,
+                "escalated_to_operation_team": True, "latency_ms": _elapsed_ms(start),
+            })
+            yield ("done", response)
+            return
 
         if not results:
             # 검색 결과가 전혀 없는 경우(코퍼스가 비어있는 등)만 Claude 호출 없이
